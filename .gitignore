@@ -1,0 +1,17 @@
+# Go binaries and cache
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor/
+
+# IDE-specific files
+.idea/
+.vscode/
+
+# Build and dependency directories
+/bin
+/pkg
