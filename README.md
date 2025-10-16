@@ -35,12 +35,6 @@ The service uses a multi-layered approach to resolve IP addresses to hostnames, 
 
 ## Quick Start
 
-1.  **Build the Docker image**:
-    ```sh
-    docker build -t go-log-enricher .
-    ```
-
-2.  **Run the service**:
     ```sh
     docker run -d \
       --name log-enricher \
@@ -48,7 +42,7 @@ The service uses a multi-layered approach to resolve IP addresses to hostnames, 
       -e "LOKI_URL=http://your-loki-instance:3100" \
       -v /path/to/your/logs:/logs \
       -v /path/to/app/cache:/cache \
-      go-log-enricher
+      ghcr.io/l3tum/log-enricher
     ```
 
 ## Configuration
@@ -171,11 +165,12 @@ docker run -d \
   -v /path/to/your/logs:/logs \
   -v /path/to/app/cache:/cache \
   -v /path/to/geoip.mmdb:/geoip/GeoLite2-City.mmdb \
-  go-log-enricher
+  ghcr.io/l3tum/log-enricher
 ````
 
 ## Contributing
 
 This is a personal hobby project built primarily for my own needs. While I appreciate community interest and ideas, please understand that I may not be able to address all feature requests or issues immediately.
+
 
 If you have an idea or find a bug, feel free to open an issue to start a discussion.
