@@ -1,10 +1,8 @@
 package state
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -17,7 +15,7 @@ import (
 type FileState struct {
 	Path         string `json:"path"`
 	LineNumber   int64  `json:"line_number"`
-	LineContent  string `json:"line_content"`            // Content of the last processed line
+	Inode        uint64 `json:"inode,omitempty"`         // Inode number for file identity
 	FileSize     int64  `json:"file_size,omitempty"`     // File size at last read, only saved on shutdown
 	LastModified int64  `json:"last_modified,omitempty"` // Unix timestamp, only saved on shutdown
 }
@@ -146,90 +144,51 @@ func UpdateAllFileMetadata() {
 		}
 		fileState.FileSize = info.Size()
 		fileState.LastModified = info.ModTime().Unix()
+		if inode, ok := getInode(info); ok {
+			fileState.Inode = inode
+		}
 	}
 }
 
-// FindMatchingPosition tries to find where we left off.
+// FindMatchingPosition determines if we can resume tailing based on file metadata.
+// It returns the line number to resume from and a boolean indicating if a match was found.
 func FindMatchingPosition(path string, storedState *FileState) (int64, bool) {
-	// If we have no line content to match, we have no choice but to start over.
-	if storedState.LineContent == "" {
-		log.Printf("No last known line content for %s, starting from beginning.", path)
+	info, err := os.Stat(path)
+	if err != nil {
+		log.Printf("Error stating file for position matching %s: %v. Starting from beginning.", path, err)
 		return 0, false
 	}
 
-	file, err := os.Open(path)
-	if err != nil {
-		log.Printf("Error opening file for position matching %s: %v", path, err)
-		return 0, false // Cannot find, so start from beginning
-	}
-	defer file.Close()
-
-	info, err := file.Stat()
-	if err != nil {
-		log.Printf("Error stating file for position matching %s: %v", path, err)
-		return 0, false // Cannot find, so start from beginning
-	}
-
-	// Scenario 1: File appears unchanged. Check only if metadata is present in the state.
-	if storedState.FileSize > 0 && storedState.LastModified > 0 {
-		if info.Size() == storedState.FileSize && info.ModTime().Unix() == storedState.LastModified {
-			log.Printf("File %s appears unchanged based on stored metadata. Verifying line %d.", path, storedState.LineNumber)
-			scanner := bufio.NewScanner(file)
-			var lineNum int64 = 0
-			for scanner.Scan() {
-				lineNum++
-				if lineNum == storedState.LineNumber {
-					if scanner.Text() == storedState.LineContent {
-						log.Printf("Content of line %d matches. Resuming from this line.", storedState.LineNumber)
-						return storedState.LineNumber, true
-					}
-					log.Printf("Content mismatch at line %d. Will rescan file.", storedState.LineNumber)
-					break // Fall through to scenario 2
-				}
-			}
-			if lineNum < storedState.LineNumber {
-				log.Printf("File seems truncated. Will rescan file.")
-				// Fall through to scenario 2
-			}
-		}
-	} else {
-		log.Printf("No existing file metadata for %s, will perform content matching.", path)
-	}
-
-	// Scenario 2: File has changed, content mismatched, or no metadata. Search for the line content.
-	log.Printf("File %s has changed or content mismatched. Searching for last known line content: \"%s\"", path, truncateForLogging(storedState.LineContent, 256))
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		log.Printf("Error rewinding file %s: %v. Starting from beginning.", path, err)
+	// Primary check: Inode. If it doesn't match, it's a different file.
+	currentInode, inodeSupported := getInode(info)
+	if inodeSupported && storedState.Inode != 0 && currentInode != storedState.Inode {
+		log.Printf("File %s has been rotated (inode mismatch: stored %d, current %d). Starting from beginning.", path, storedState.Inode, currentInode)
 		return 0, false
 	}
 
-	scanner := bufio.NewScanner(file)
-	var lineNum int64 = 0
-	for scanner.Scan() {
-		lineNum++
-		// Search the entire file for the last known line content.
-		// This is safer if the file has been truncated at the beginning.
-		if scanner.Text() == storedState.LineContent {
-			log.Printf("Found matching content at new line number %d. Resuming from here.", lineNum)
-			return lineNum, true
+	// If inodes match, we only need to check for truncation.
+	if inodeSupported && storedState.Inode != 0 && currentInode == storedState.Inode {
+		if info.Size() < storedState.FileSize {
+			log.Printf("File %s was truncated (same inode, size is smaller). Starting from beginning.", path)
+			return 0, false
 		}
+		// Inodes match and not truncated, we can resume.
+		log.Printf("File %s appears the same based on inode. Resuming from line %d.", path, storedState.LineNumber)
+		return storedState.LineNumber, true
 	}
 
-	if err := scanner.Err(); err != nil {
-		log.Printf("Error scanning file %s for position: %v", path, err)
+	// Fallback for when inode is not supported or it's the first run with the new state format.
+	// We check for strict equality to ensure it's the same file.
+	if storedState.FileSize == 0 || storedState.LastModified == 0 {
+		return 0, false // No prior state to compare against.
+	}
+	if info.Size() == storedState.FileSize && info.ModTime().Unix() == storedState.LastModified {
+		log.Printf("File %s appears unchanged based on stored metadata. Resuming from line %d.", path, storedState.LineNumber)
+		return storedState.LineNumber, true
 	}
 
-	// Scenario 3: Not found
-	log.Printf("Could not find matching content in %s. Starting from beginning.", path)
+	log.Printf("File %s has changed. Starting from beginning.", path)
 	return 0, false
-}
-
-// truncateForLogging truncates a string to a max length for safe logging.
-func truncateForLogging(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
 }
 
 // --- Cache Functions ---

@@ -1,6 +1,7 @@
 package backends
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"net/http"
@@ -8,7 +9,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/goccy/go-json"
 	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/loki-client-go/loki"
 	"github.com/grafana/loki-client-go/pkg/urlutil"
@@ -82,8 +82,8 @@ func (b *LokiBackend) Name() string {
 	return "loki"
 }
 
-// Send formats the entry as JSON and sends it to Loki.
-func (b *LokiBackend) Send(sourcePath string, entry map[string]interface{}) error {
+// Send uses the pre-marshaled entry and sends it to Loki.
+func (b *LokiBackend) Send(sourcePath string, entryAsBytes []byte) error {
 	// Use the sourcePath's filename as a label for better context in Loki.
 	appName := filepath.Base(filepath.Dir(sourcePath))
 	if appName == "." || appName == "/" || appName == "" {
@@ -95,13 +95,11 @@ func (b *LokiBackend) Send(sourcePath string, entry map[string]interface{}) erro
 		"app":         model.LabelValue(appName),
 	}
 
-	line, err := json.Marshal(entry)
-	if err != nil {
-		return fmt.Errorf("failed to marshal log entry for Loki: %w", err)
-	}
+	// The JSON encoder adds a newline, which we must trim before sending to Loki.
+	line := bytes.TrimSuffix(entryAsBytes, []byte("\n"))
 
 	// The Loki client handles batching and sending internally.
-	err = b.client.Handle(labels, time.Now(), string(line))
+	err := b.client.Handle(labels, time.Now(), string(line))
 	if err != nil {
 		return err
 	}

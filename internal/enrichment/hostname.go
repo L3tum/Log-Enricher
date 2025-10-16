@@ -7,22 +7,30 @@ import (
 	"sync"
 	"time"
 
-	"log-enricher/internal/config"
 	"log-enricher/internal/models"
 	"log-enricher/internal/network"
 )
 
+// HostnameConfig holds the configuration for the hostname enrichment stage.
+type HostnameConfig struct {
+	DNSServer     string `mapstructure:"dns_server"`
+	EnableRDNS    bool   `mapstructure:"enable_rdns"`
+	EnableMDNS    bool   `mapstructure:"enable_mdns"`
+	EnableLLMNR   bool   `mapstructure:"enable_llmnr"`
+	EnableNetBIOS bool   `mapstructure:"enable_netbios"`
+}
+
 // HostnameStage performs various network lookups in parallel to find a hostname.
 type HostnameStage struct {
-	cfg      *config.Config
+	cfg      *HostnameConfig
 	resolver *net.Resolver
 }
 
 // NewHostnameStage creates a new, parallel hostname enrichment stage.
-func NewHostnameStage(cfg *config.Config) *HostnameStage {
+func NewHostnameStage(config *HostnameConfig) *HostnameStage {
 	return &HostnameStage{
-		cfg:      cfg,
-		resolver: network.CustomResolver(cfg),
+		cfg:      config,
+		resolver: network.CustomResolver(config.DNSServer),
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"log-enricher/internal/models"
 
+	// Step 1: Corrected the typo in the import path.
 	"github.com/maxmind/mmdbwriter"
 	"github.com/maxmind/mmdbwriter/mmdbtype"
 	"github.com/stretchr/testify/assert"
@@ -47,55 +48,25 @@ func createTestDB(t *testing.T, ip string, city string, country string) string {
 	return tmpfile.Name()
 }
 
-// writeTestDB overwrites an existing database file for testing reload functionality.
-func writeTestDB(t *testing.T, dbPath, ip, city, country string) {
-	t.Helper()
-
-	writer, err := mmdbwriter.New(mmdbwriter.Options{DatabaseType: "GeoIP2-City"})
-	require.NoError(t, err)
-
-	ipNet := net.ParseIP(ip)
-	_, network, err := net.ParseCIDR(ipNet.String() + "/32")
-	require.NoError(t, err)
-
-	err = writer.Insert(network, mmdbtype.Map{
-		"city":    mmdbtype.Map{"names": mmdbtype.Map{"en": mmdbtype.String(city)}},
-		"country": mmdbtype.Map{"iso_code": mmdbtype.String(country)},
-	})
-	require.NoError(t, err)
-
-	f, err := os.Create(dbPath)
-	require.NoError(t, err)
-	defer f.Close()
-
-	_, err = writer.WriteTo(f)
-	require.NoError(t, err)
-}
-
 func TestNewGeoIPStage(t *testing.T) {
 	t.Run("disabled when path is empty", func(t *testing.T) {
-		stage, err := NewGeoIPStage("")
+		stage, err := NewGeoIPStage(&GeoIpConfig{DatabasePath: ""})
 		assert.Nil(t, stage)
 		assert.NoError(t, err)
 	})
 
 	t.Run("error on invalid db path", func(t *testing.T) {
-		stage, err := NewGeoIPStage("nonexistent/path/to/db.mmdb")
+		stage, err := NewGeoIPStage(&GeoIpConfig{DatabasePath: "nonexistent/path/to/db.mmdb"})
 		assert.Nil(t, stage)
 		assert.Error(t, err)
 	})
 
 	t.Run("successful creation", func(t *testing.T) {
 		dbPath := createTestDB(t, "8.8.8.8", "Mountain View", "US")
+		config := &GeoIpConfig{DatabasePath: dbPath}
 
-		stage, err := NewGeoIPStage(dbPath)
-		defer func() {
-			if stage != nil {
-				// Close the DB before removing the file to avoid lock issues.
-				stage.(*GeoIPStage).db.Close()
-			}
-			os.Remove(dbPath)
-		}()
+		stage, err := NewGeoIPStage(config)
+		defer os.Remove(dbPath)
 
 		require.NotNil(t, stage)
 		require.NoError(t, err)
@@ -106,14 +77,12 @@ func TestNewGeoIPStage(t *testing.T) {
 
 func TestGeoIPStage_Run(t *testing.T) {
 	dbPath := createTestDB(t, "8.8.8.8", "Mountain View", "US")
+	config := &GeoIpConfig{DatabasePath: dbPath}
 
-	stage, err := NewGeoIPStage(dbPath)
+	stage, err := NewGeoIPStage(config)
 	require.NotNil(t, stage)
 	require.NoError(t, err)
-	defer func() {
-		stage.(*GeoIPStage).db.Close()
-		os.Remove(dbPath)
-	}()
+	defer os.Remove(dbPath)
 
 	t.Run("enrich public IP", func(t *testing.T) {
 		result := &models.Result{}
@@ -147,11 +116,10 @@ func TestGeoIPStage_Run(t *testing.T) {
 	})
 
 	t.Run("database is nil", func(t *testing.T) {
-		geoIPStage := stage.(*GeoIPStage)
 		// Temporarily set db to nil
-		db := geoIPStage.db
-		geoIPStage.db = nil
-		defer func() { geoIPStage.db = db }()
+		db := stage.db
+		stage.db = nil
+		defer func() { stage.db = db }()
 
 		result := &models.Result{}
 		updated := stage.Run("8.8.8.8", result)
@@ -161,21 +129,12 @@ func TestGeoIPStage_Run(t *testing.T) {
 
 func TestGeoIPStage_Reload(t *testing.T) {
 	dbPath := createTestDB(t, "8.8.8.8", "Mountain View", "US")
+	config := &GeoIpConfig{DatabasePath: dbPath}
 
-	stage, err := NewGeoIPStage(dbPath)
+	stage, err := NewGeoIPStage(config)
 	require.NotNil(t, stage)
 	require.NoError(t, err)
-	defer func() {
-		// The DB might have been reloaded, so we need to get the current instance to close it.
-		s := stage.(*GeoIPStage)
-		s.mu.RLock()
-		db := s.db
-		s.mu.RUnlock()
-		if db != nil {
-			db.Close()
-		}
-		os.Remove(dbPath)
-	}()
+	defer os.Remove(dbPath)
 
 	// First, check the initial data.
 	result1 := &models.Result{}

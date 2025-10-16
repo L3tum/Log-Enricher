@@ -2,9 +2,12 @@ package backends
 
 import (
 	"log"
+	"log-enricher/internal/bufferpool"
 	"strings"
 
 	"log-enricher/internal/config"
+
+	"github.com/goccy/go-json"
 )
 
 // Manager is the public interface for a backend manager that can broadcast entries and be shut down.
@@ -52,10 +55,28 @@ func NewManager(cfg *config.Config) (Manager, error) {
 	return m, nil
 }
 
-// Broadcast sends the log entry to all enabled backends.
+// Broadcast marshals the entry to JSON once and sends the resulting bytes to all enabled backends.
 func (m *manager) Broadcast(sourcePath string, entry map[string]interface{}) {
+	if len(m.backends) == 0 {
+		return
+	}
+
+	// GetByteBuffer a buffer from the pool.
+	buf := bufferpool.GetByteBuffer()
+	// Ensure the buffer is returned to the pool when we're done.
+	defer bufferpool.PutByteBuffer(buf)
+
+	// Use a JSON encoder to write directly into the buffer, which is more efficient.
+	// Note: The encoder automatically adds a newline character.
+	if err := json.NewEncoder(buf).Encode(entry); err != nil {
+		log.Printf("Error marshaling log entry for backends: %v", err)
+		return
+	}
+
+	lineBytes := buf.Bytes()
+
 	for _, b := range m.backends {
-		if err := b.Send(sourcePath, entry); err != nil {
+		if err := b.Send(sourcePath, lineBytes); err != nil {
 			log.Printf("Error sending to backend '%s': %v", b.Name(), err)
 		}
 	}

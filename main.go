@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"log-enricher/internal/pipeline"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,7 +11,6 @@ import (
 	"log-enricher/internal/backends"
 	"log-enricher/internal/cache"
 	"log-enricher/internal/config"
-	"log-enricher/internal/enrichment"
 	"log-enricher/internal/logging"
 	"log-enricher/internal/network"
 	"log-enricher/internal/requery"
@@ -47,28 +47,11 @@ func main() {
 		log.Printf("Warning: Failed to load cache from state: %v", err)
 	}
 
-	// Dynamically create the enrichment pipeline based on config.
-	var stages []enrichment.Stage
-	if cfg.EnableHostnameStage {
-		stages = append(stages, enrichment.NewHostnameStage(cfg))
+	// Create pipeline stages
+	pipelineManager, err := pipeline.NewManager(cfg)
+	if err != nil {
+		log.Fatalf("Failed to initialize pipeline: %v", err)
 	}
-	if cfg.EnableGeoIpStage {
-		// NewGeoIPStage gracefully returns nil if the path is invalid.
-		// We must check for nil before appending to the interface slice to avoid a panic.
-		if geoIPStage, err := enrichment.NewGeoIPStage(cfg.GeoIPDatabasePath); err == nil {
-			stages = append(stages, geoIPStage)
-		} else {
-			log.Printf("Warning: Failed to initialize GeoIP stage: %v", err)
-		}
-	}
-	if cfg.EnableCrowdsecStage {
-		if crowdsecStage, err := enrichment.NewCrowdsecStage(cfg); err == nil {
-			stages = append(stages, crowdsecStage)
-		} else {
-			log.Printf("Warning: Failed to initialize Crowdsec stage: %v", err)
-		}
-	}
-	enrichmentPipeline := enrichment.NewPipeline(stages...)
 
 	// Start neighbor watcher
 	go network.WatchNeighbors()
@@ -77,12 +60,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := watcher.StartLogWatcher(ctx, cfg, enrichmentPipeline, backendManager); err != nil {
+	if err := watcher.StartLogWatcher(ctx, cfg, pipelineManager, backendManager); err != nil {
 		log.Fatalf("Failed to start log watcher: %v", err)
 	}
 
 	// Start cache requery goroutine
-	go requery.StartRequeryLoop(cfg.RequeryInterval, enrichmentPipeline)
+	go requery.StartRequeryLoop(cfg.RequeryInterval, pipelineManager.EnrichmentStages())
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)

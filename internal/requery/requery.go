@@ -2,15 +2,16 @@ package requery
 
 import (
 	"log"
+	"log-enricher/internal/models"
+	"log-enricher/internal/pipeline"
 	"reflect"
 	"time"
 
 	"log-enricher/internal/cache"
-	"log-enricher/internal/enrichment"
 )
 
 // StartRequeryLoop periodically re-runs enrichment on all items in the cache.
-func StartRequeryLoop(interval time.Duration, enricher enrichment.Enricher) {
+func StartRequeryLoop(interval time.Duration, enrichmentStages []pipeline.EnrichmentStage) {
 	if interval == 0 {
 		return // Requery is disabled.
 	}
@@ -32,7 +33,13 @@ func StartRequeryLoop(interval time.Duration, enricher enrichment.Enricher) {
 			}
 
 			// Perform a fresh enrichment, bypassing the cache for the lookup itself.
-			newResult := enricher.PerformEnrichment(ip)
+			var newResult models.Result
+			for _, stage := range enrichmentStages {
+				err := stage.PerformEnrichment(ip, &newResult)
+				if err != nil {
+					return
+				}
+			}
 
 			// Only update if the result has meaningfully changed.
 			if !reflect.DeepEqual(cachedResult, newResult) {

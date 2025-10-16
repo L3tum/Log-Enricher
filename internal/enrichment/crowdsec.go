@@ -1,6 +1,7 @@
 package enrichment
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,28 +9,27 @@ import (
 	"net/http"
 	"time"
 
-	"log-enricher/internal/config"
 	"log-enricher/internal/models"
 )
 
+// CrowdsecConfig holds the configuration for the CrowdSec enrichment stage.
+type CrowdsecConfig struct {
+	LapiURL string `mapstructure:"lapi_url"`
+	LapiKey string `mapstructure:"lapi_key"`
+}
+
 // CrowdsecStage communicates with a Crowdsec LAPI.
 type CrowdsecStage struct {
-	client  *http.Client
-	lapiURL string
-	apiKey  string
+	config *CrowdsecConfig
 }
 
 // NewCrowdsecStage creates a new stage for Crowdsec enrichment.
-func NewCrowdsecStage(cfg *config.Config) (Stage, error) {
-	if cfg.CrowdsecLapiURL == "" || cfg.CrowdsecLapiKey == "" {
-		return nil, fmt.Errorf("Crowdsec LAPI URL or API key not configured")
+func NewCrowdsecStage(config *CrowdsecConfig) (*CrowdsecStage, error) {
+	if config.LapiURL == "" || config.LapiKey == "" {
+		return nil, fmt.Errorf("crowdsec LAPI URL or API key not configured")
 	}
 	return &CrowdsecStage{
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-		},
-		lapiURL: cfg.CrowdsecLapiURL,
-		apiKey:  cfg.CrowdsecLapiKey,
+		config: config,
 	}, nil
 }
 
@@ -40,14 +40,18 @@ func (s *CrowdsecStage) Name() string {
 
 // Run performs the enrichment by querying the Crowdsec LAPI.
 func (s *CrowdsecStage) Run(ip string, result *models.Result) (updated bool) {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v1/decisions?ip=%s", s.lapiURL, ip), nil)
+	// Use a context to enforce a timeout for this specific request.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", fmt.Sprintf("%s/v1/decisions?ip=%s", s.config.LapiURL, ip), nil)
 	if err != nil {
 		log.Printf("Crowdsec: failed to create request for %s: %v", ip, err)
 		return false
 	}
-	req.Header.Add("X-Api-Key", s.apiKey)
+	req.Header.Add("X-Api-Key", s.config.LapiKey)
 
-	resp, err := s.client.Do(req)
+	resp, err := Get().Do(req)
 	if err != nil {
 		log.Printf("Crowdsec: failed to query for %s: %v", ip, err)
 		return false

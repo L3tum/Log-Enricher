@@ -6,16 +6,14 @@ import (
 	"net"
 	"strings"
 	"time"
-
-	"log-enricher/internal/config"
 )
 
-func CustomResolver(cfg *config.Config) *net.Resolver {
+func CustomResolver(dnsServer string) *net.Resolver {
 	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 5 * time.Second}
-			return d.DialContext(ctx, "udp", cfg.DNSServer)
+			return d.DialContext(ctx, "udp", dnsServer)
 		},
 	}
 }

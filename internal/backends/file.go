@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-
-	"github.com/goccy/go-json"
 )
 
 // FileBackend writes enriched logs to separate files based on the original log's path.
@@ -27,21 +25,15 @@ func (b *FileBackend) Name() string {
 	return "file"
 }
 
-// Send marshals the entry to JSON and writes it to a corresponding .enriched file.
-// It uses an optimistic, lock-free read for existing writers.
-func (b *FileBackend) Send(sourcePath string, entry map[string]interface{}) error {
+// Send writes the pre-marshaled entry to a corresponding .enriched file.
+// The incoming byte slice already contains a newline.
+func (b *FileBackend) Send(sourcePath string, entryAsBytes []byte) error {
 	writer, err := b.getWriter(sourcePath)
 	if err != nil {
 		return err
 	}
 
-	line, err := json.Marshal(entry)
-	if err != nil {
-		return err
-	}
-	line = append(line, '\n')
-
-	_, err = writer.Write(line)
+	_, err = writer.Write(entryAsBytes)
 	return err
 }
 

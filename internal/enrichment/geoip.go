@@ -3,8 +3,11 @@ package enrichment
 import (
 	"log"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 
 	"log-enricher/internal/models"
 
@@ -12,11 +15,16 @@ import (
 	"github.com/oschwald/geoip2-golang"
 )
 
+// GeoIpConfig holds the configuration for the GeoIP enrichment stage.
+type GeoIpConfig struct {
+	DatabasePath string `mapstructure:"database_path"`
+}
+
 // GeoIPStage enriches an IP with geo-location information.
 // It can reload the GeoIP database if it's updated on disk.
 type GeoIPStage struct {
+	config *GeoIpConfig
 	db     *geoip2.Reader
-	dbPath string
 	mu     sync.RWMutex
 }
 
@@ -24,22 +32,27 @@ type GeoIPStage struct {
 // It returns an error if the database cannot be opened.
 // It returns a nil stage and nil error if the path is not configured.
 // It starts a background goroutine to watch for database updates.
-func NewGeoIPStage(dbPath string) (Stage, error) {
-	if dbPath == "" {
-		log.Println("GeoIP database path is not configured, stage disabled.")
-		return nil, nil // Not an error, just disabled.
+func NewGeoIPStage(config *GeoIpConfig) (*GeoIPStage, error) {
+	if config.DatabasePath == "" {
+		log.Println("GeoIP database path is not configured.")
+		return nil, nil
 	}
-	db, err := geoip2.Open(dbPath)
+
+	if _, err := os.Stat(config.DatabasePath); os.IsNotExist(err) {
+		return nil, err
+	}
+
+	db, err := geoip2.Open(config.DatabasePath)
 	if err != nil {
 		return nil, err
 	}
 
 	stage := &GeoIPStage{
+		config: config,
 		db:     db,
-		dbPath: dbPath,
 	}
 
-	go stage.watchForDBUpdates()
+	go stage.watchForUpdates()
 	log.Println("GeoIP enrichment stage initialized, watching for database updates.")
 	return stage, nil
 }
@@ -64,7 +77,6 @@ func (s *GeoIPStage) Run(ipStr string, result *models.Result) (updated bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	// The database might be nil if the initial load failed or it is being reloaded.
 	if s.db == nil {
 		return false
 	}
@@ -97,19 +109,18 @@ func (s *GeoIPStage) Run(ipStr string, result *models.Result) (updated bool) {
 	return updated
 }
 
-// watchForDBUpdates monitors the GeoIP database file for changes and reloads it.
-func (s *GeoIPStage) watchForDBUpdates() {
+func (s *GeoIPStage) watchForUpdates() {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		log.Printf("GeoIP: Failed to create file watcher: %v", err)
+		log.Printf("GeoIP: Error creating file watcher: %v", err)
 		return
 	}
 	defer watcher.Close()
 
 	// Watch the directory, as file updates can sometimes be atomic renames.
-	dir := filepath.Dir(s.dbPath)
+	dir := filepath.Dir(s.config.DatabasePath)
 	if err := watcher.Add(dir); err != nil {
-		log.Printf("GeoIP: Failed to watch directory %s: %v", dir, err)
+		log.Printf("GeoIP: Error adding watcher for directory %s: %v", dir, err)
 		return
 	}
 
@@ -120,8 +131,8 @@ func (s *GeoIPStage) watchForDBUpdates() {
 				return
 			}
 
-			if event.Name == s.dbPath && (event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create || event.Op&fsnotify.Rename == fsnotify.Rename) {
-				log.Printf("GeoIP: Database file %s appears to have been updated. Reloading.", s.dbPath)
+			if event.Name == s.config.DatabasePath && (event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create || event.Op&fsnotify.Rename == fsnotify.Rename) {
+				log.Printf("GeoIP: Database file %s appears to have been updated. Reloading.", s.config.DatabasePath)
 				s.reloadDB()
 			}
 		case err, ok := <-watcher.Errors:
@@ -129,6 +140,7 @@ func (s *GeoIPStage) watchForDBUpdates() {
 				return
 			}
 			log.Printf("GeoIP: Watcher error: %v", err)
+			return
 		}
 	}
 
@@ -144,12 +156,34 @@ func (s *GeoIPStage) reloadDB() {
 		if err := s.db.Close(); err != nil {
 			log.Printf("GeoIP: Error closing old database: %v", err)
 		}
+		s.db = nil
 	}
 
-	newDb, err := geoip2.Open(s.dbPath)
+	// Add a retry loop to handle transient file locks on Windows.
+	var newDb *geoip2.Reader
+	var err error
+	const maxRetries = 5
+	const retryDelay = 100 * time.Millisecond
+
+	for i := 0; i < maxRetries; i++ {
+		newDb, err = geoip2.Open(s.config.DatabasePath)
+		if err == nil {
+			break // Success
+		}
+
+		// Check for the specific sharing violation error text on Windows.
+		if strings.Contains(err.Error(), "used by another process") {
+			log.Printf("GeoIP: Database is locked, retrying in %v...", retryDelay)
+			time.Sleep(retryDelay)
+			continue
+		}
+
+		// It's a different kind of error, so we shouldn't retry.
+		break
+	}
+
 	if err != nil {
-		log.Printf("GeoIP: Error reloading database %s: %v", s.dbPath, err)
-		s.db = nil // Ensure we don't use a stale or invalid database.
+		log.Printf("GeoIP: Error reloading database %s after retries: %v", s.config.DatabasePath, err)
 		return
 	}
 

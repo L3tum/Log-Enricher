@@ -5,56 +5,83 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
-// Mock Backend Manager for logging test
-type mockLogBackendManager struct {
-	mu            sync.Mutex
-	lastBroadcast map[string]interface{}
+// mockBackendManager is a mock implementation of the backends.Manager.
+type mockBackendManager struct {
+	lastSource string
+	lastEntry  map[string]interface{}
+	callCount  int
 }
 
-func (m *mockLogBackendManager) Broadcast(sourcePath string, entry map[string]interface{}) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.lastBroadcast = entry
+// Broadcast records the call and its arguments for later assertion.
+func (m *mockBackendManager) Broadcast(source string, entry map[string]interface{}) {
+	m.lastSource = source
+	m.lastEntry = entry
+	m.callCount++
 }
-func (m *mockLogBackendManager) Shutdown() {}
 
-func TestDualLogger(t *testing.T) {
-	// 1. Setup mocks
-	originalStdout := os.Stdout
+func (m *mockBackendManager) Shutdown() {}
+
+// captureOutput captures everything written to os.Stdout during the execution of a function.
+func captureOutput(f func()) string {
+	var mu sync.Mutex
+	mu.Lock()
+	defer mu.Unlock()
+
+	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
-	defer func() {
-		os.Stdout = originalStdout
-		log.SetOutput(os.Stderr)
-	}()
 
-	mockBackends := &mockLogBackendManager{}
+	f()
 
-	// 2. Initialize our custom logger
-	New(mockBackends)
+	_ = w.Close()
+	os.Stdout = old
 
-	// 3. Log a message
-	log.Println("test message")
-	w.Close()
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	return buf.String()
+}
 
-	// 4. Verify stdout output
-	var stdoutBuf bytes.Buffer
-	_, _ = io.Copy(&stdoutBuf, r)
-	if !bytes.Contains(stdoutBuf.Bytes(), []byte("test message")) {
-		t.Errorf("stdout did not contain the expected message. Got: %q", stdoutBuf.String())
+func TestDualLogger(t *testing.T) {
+	// Save the original logger state to restore it after the test.
+	originalOutput := log.Writer()
+	originalFlags := log.Flags()
+	t.Cleanup(func() {
+		log.SetOutput(originalOutput)
+		log.SetFlags(originalFlags)
+	})
+
+	// Arrange
+	mockManager := &mockBackendManager{}
+	testMessage := "hello world"
+
+	// Act: Call a standard log function, which should be intercepted by our dualLogger.
+	output := captureOutput(func() {
+		// Step 2: Initialize the logger *inside* the capture function.
+		// This ensures it uses the redirected stdout pipe.
+		New(mockManager)
+		log.Println(testMessage)
+	})
+
+	// Assert: Check that the log was written to stdout.
+	assert.True(t, strings.HasSuffix(output, testMessage+"\n"), "Expected log message to be written to stdout")
+
+	// Assert: Check that the log was broadcast to the backend manager.
+	require.Equal(t, 1, mockManager.callCount, "Broadcast should have been called once")
+	assert.Equal(t, "internal", mockManager.lastSource, "Broadcast source should be 'internal'")
+
+	// Assert: Check the structure of the broadcasted log entry.
+	expectedEntry := map[string]interface{}{
+		"level":   "info",
+		"message": testMessage,
+		"source":  "internal",
 	}
-
-	// 5. Verify backend output
-	mockBackends.mu.Lock()
-	defer mockBackends.mu.Unlock()
-	if mockBackends.lastBroadcast == nil {
-		t.Fatal("backend manager did not receive a broadcast")
-	}
-	if msg, ok := mockBackends.lastBroadcast["message"]; !ok || msg != "test message" {
-		t.Errorf("backend received incorrect message: %v", msg)
-	}
+	assert.Equal(t, expectedEntry, mockManager.lastEntry, "Broadcast entry has incorrect content")
 }

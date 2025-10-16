@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -8,53 +9,70 @@ import (
 )
 
 type Config struct {
-	DNSServer           string
-	CacheSize           int
-	StateFilePath       string
-	RequeryInterval     time.Duration
-	LogBasePath         string
-	LogFileExtensions   []string
-	ClientIPFields      []string
-	GeoIPDatabasePath   string
-	Backends            []string
-	LokiURL             string
-	EnrichedFileSuffix  string
-	EnableHostnameStage bool
-	EnableGeoIpStage    bool
-	EnableCrowdsecStage bool
-	EnableRDNS          bool
-	EnableMDNS          bool
-	EnableLLMNR         bool
-	EnableNetBIOS       bool
-	CrowdsecLapiURL     string
-	CrowdsecLapiKey     string
+	CacheSize                  int
+	StateFilePath              string
+	RequeryInterval            time.Duration
+	LogBasePath                string
+	LogFileExtensions          []string
+	PlaintextProcessingEnabled bool
+	Backends                   []string
+	LokiURL                    string
+	EnrichedFileSuffix         string
+	Stages                     []StageConfig
+}
+
+// StageConfig holds the configuration for a single pipeline stage.
+type StageConfig struct {
+	Type   string
+	Params map[string]interface{}
 }
 
 func Load() *Config {
 	cfg := &Config{
-		DNSServer:           getEnv("DNS_SERVER", "8.8.8.8:53"),
-		CacheSize:           getEnvInt("CACHE_SIZE", 10000),
-		StateFilePath:       getEnv("STATE_FILE_PATH", "/cache/state.json"),
-		RequeryInterval:     getEnvDuration("REQUERY_INTERVAL", 5*time.Minute),
-		LogBasePath:         getEnv("LOG_BASE_PATH", "/logs"),
-		LogFileExtensions:   getEnvSlice("LOG_FILE_EXTENSIONS", []string{".log"}),
-		ClientIPFields:      getEnvSlice("CLIENT_IP_FIELDS", []string{"client_ip", "remote_addr"}),
-		GeoIPDatabasePath:   getEnv("GEOIP_DATABASE_PATH", ""),
-		Backends:            getEnvSlice("BACKENDS", []string{"file"}),
-		LokiURL:             getEnv("LOKI_URL", ""),
-		EnrichedFileSuffix:  getEnv("ENRICHED_FILE_SUFFIX", ".enriched"),
-		EnableHostnameStage: getEnvBool("ENABLE_HOSTNAME_STAGE", true),
-		EnableGeoIpStage:    getEnvBool("ENABLE_GEOIP_STAGE", false),
-		EnableCrowdsecStage: getEnvBool("ENABLE_CROWDSEC_STAGE", false),
-		EnableRDNS:          getEnvBool("ENABLE_RDNS", true),
-		EnableMDNS:          getEnvBool("ENABLE_MDNS", true),
-		EnableLLMNR:         getEnvBool("ENABLE_LLMNR", true),
-		EnableNetBIOS:       getEnvBool("ENABLE_NETBIOS", true),
-		CrowdsecLapiURL:     getEnv("CROWDSEC_LAPI_URL", ""),
-		CrowdsecLapiKey:     getEnv("CROWDSEC_LAPI_KEY", ""),
+		CacheSize:                  getEnvInt("CACHE_SIZE", 10000),
+		StateFilePath:              getEnv("STATE_FILE_PATH", "/cache/state.json"),
+		RequeryInterval:            getEnvDuration("REQUERY_INTERVAL", 5*time.Minute),
+		LogBasePath:                getEnv("LOG_BASE_PATH", "/logs"),
+		PlaintextProcessingEnabled: getEnvBool("PLAINTEXT_PROCESSING_ENABLED", true),
+		LogFileExtensions:          getEnvSlice("LOG_FILE_EXTENSIONS", []string{".log"}),
+		Backends:                   getEnvSlice("BACKENDS", []string{"file"}),
+		LokiURL:                    getEnv("LOKI_URL", ""),
+		EnrichedFileSuffix:         getEnv("ENRICHED_FILE_SUFFIX", ".enriched"),
+		Stages:                     loadStages(),
 	}
 
 	return cfg
+}
+
+// loadStages dynamically loads pipeline stage configurations from environment variables.
+func loadStages() []StageConfig {
+	stages := []StageConfig{}
+	for i := 0; ; i++ {
+		stageTypeKey := fmt.Sprintf("STAGE_%d_TYPE", i)
+		stageType := getEnv(stageTypeKey, "")
+		if stageType == "" {
+			break // No more stages defined.
+		}
+
+		stage := StageConfig{
+			Type:   stageType,
+			Params: make(map[string]interface{}),
+		}
+
+		// Find all STAGE_i_* variables and add them to the stage's params.
+		prefix := fmt.Sprintf("STAGE_%d_", i)
+		for _, e := range os.Environ() {
+			if strings.HasPrefix(e, prefix) {
+				parts := strings.SplitN(e, "=", 2)
+				key := strings.ToLower(strings.TrimPrefix(parts[0], prefix))
+				if key != "type" {
+					stage.Params[key] = parts[1]
+				}
+			}
+		}
+		stages = append(stages, stage)
+	}
+	return stages
 }
 
 func getEnv(key, defaultValue string) string {

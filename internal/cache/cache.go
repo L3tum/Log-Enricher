@@ -10,9 +10,16 @@ import (
 
 var (
 	resultCache *lru.Cache[string, models.Result]
+	initialized bool
 )
 
 func Initialize(size int) error {
+	if initialized {
+		return nil
+	}
+
+	initialized = true
+
 	cache, err := lru.New[string, models.Result](size)
 	if err != nil {
 		return err
