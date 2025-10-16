@@ -35,15 +35,15 @@ The service uses a multi-layered approach to resolve IP addresses to hostnames, 
 
 ## Quick Start
 
-    ```sh
-    docker run -d \
-      --name log-enricher \
-      -e "BACKENDS=file,loki" \
-      -e "LOKI_URL=http://your-loki-instance:3100" \
-      -v /path/to/your/logs:/logs \
-      -v /path/to/app/cache:/cache \
-      ghcr.io/l3tum/log-enricher
-    ```
+```sh
+docker run -d \
+  --name log-enricher \
+  -e "BACKENDS=file,loki" \
+  -e "LOKI_URL=http://your-loki-instance:3100" \
+  -v /path/to/your/logs:/logs \
+  -v /path/to/app/cache:/cache \
+  ghcr.io/l3tum/log-enricher
+ ```
 
 ## Configuration
 
@@ -174,3 +174,4 @@ This is a personal hobby project built primarily for my own needs. While I appre
 
 
 If you have an idea or find a bug, feel free to open an issue to start a discussion.
+
