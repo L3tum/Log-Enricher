@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"log"
+	"log-enricher/internal/bufferpool"
 
 	"log-enricher/internal/config"
 )
@@ -12,11 +13,11 @@ import (
 // It returns true to keep the log, or false to drop it.
 type Stage interface {
 	Name() string
-	Process(line []byte, entry map[string]interface{}) (keep bool, newEntry map[string]interface{}, err error)
+	Process(line []byte, entry *bufferpool.LogEntry) (keep bool, err error)
 }
 
 type Manager interface {
-	Process(line []byte, entry map[string]interface{}) (bool, map[string]interface{})
+	Process(line []byte, entry *bufferpool.LogEntry) bool
 	EnrichmentStages() []EnrichmentStage
 }
 
@@ -61,23 +62,23 @@ func NewManager(cfg *config.Config) (Manager, error) {
 }
 
 // Process runs a log entry through the entire pipeline.
-func (m *manager) Process(line []byte, entry map[string]interface{}) (bool, map[string]interface{}) {
+func (m *manager) Process(line []byte, entry *bufferpool.LogEntry) bool {
 	keep := true
 	var err error
 
 	for _, stage := range m.stages {
-		keep, entry, err = stage.Process(line, entry)
+		keep, err = stage.Process(line, entry)
 		if err != nil {
 			log.Printf("Error during stage '%s': %v. Dropping log entry.", stage.Name(), err)
-			return false, nil
+			return false
 		}
 		if !keep {
 			// Stage decided to drop the log, so we stop processing.
-			log.Printf("Log dropped by stage: %s", stage.Name())
-			return false, nil
+			//log.Printf("Log dropped by stage: %s", stage.Name())
+			return false
 		}
 	}
-	return true, entry
+	return true
 }
 
 // EnrichmentStages returns the configured enrichment stages.

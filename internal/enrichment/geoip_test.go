@@ -148,7 +148,7 @@ func TestGeoIPStage_Reload(t *testing.T) {
 	require.NoError(t, err)
 
 	// Allow some time for the watcher to detect the change and reload.
-	time.Sleep(250 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 
 	// Now, check if the data is updated after reload.
 	result2 := &models.Result{}

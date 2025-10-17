@@ -14,8 +14,8 @@ import (
 
 // CrowdsecConfig holds the configuration for the CrowdSec enrichment stage.
 type CrowdsecConfig struct {
-	LapiURL string `mapstructure:"lapi_url"`
-	LapiKey string `mapstructure:"lapi_key"`
+	LapiURL string `mapstructure:"crowdsec_lapi_url"`
+	LapiKey string `mapstructure:"crowdsec_lapi_key"`
 }
 
 // CrowdsecStage communicates with a Crowdsec LAPI.

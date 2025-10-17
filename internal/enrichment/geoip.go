@@ -17,7 +17,7 @@ import (
 
 // GeoIpConfig holds the configuration for the GeoIP enrichment stage.
 type GeoIpConfig struct {
-	DatabasePath string `mapstructure:"database_path"`
+	DatabasePath string `mapstructure:"geoip_database_path"`
 }
 
 // GeoIPStage enriches an IP with geo-location information.
@@ -38,12 +38,18 @@ func NewGeoIPStage(config *GeoIpConfig) (*GeoIPStage, error) {
 		return nil, nil
 	}
 
+	// --- Added explicit error logging here ---
 	if _, err := os.Stat(config.DatabasePath); os.IsNotExist(err) {
+		log.Printf("ERROR: GeoIP database file not found at %s: %v", config.DatabasePath, err)
 		return nil, err
 	}
+	// -----------------------------------------
 
 	db, err := geoip2.Open(config.DatabasePath)
 	if err != nil {
+		// --- Added explicit error logging here ---
+		log.Printf("ERROR: Failed to open GeoIP database at %s: %v", config.DatabasePath, err)
+		// -----------------------------------------
 		return nil, err
 	}
 
@@ -78,12 +84,20 @@ func (s *GeoIPStage) Run(ipStr string, result *models.Result) (updated bool) {
 	defer s.mu.RUnlock()
 
 	if s.db == nil {
+		// --- Added debug logging here ---
+		log.Println("DEBUG: GeoIP database is nil during Run, skipping enrichment.")
+		// --------------------------------
 		return false
 	}
 
 	record, err := s.db.City(ip)
 	if err != nil {
 		// This can happen for private IPs, not necessarily an error.
+		// --- Added debug logging for non-private IP errors ---
+		if !ip.IsPrivate() {
+			log.Printf("DEBUG: GeoIP lookup failed for IP %s: %v", ipStr, err)
+		}
+		// ----------------------------------------------------
 		return false
 	}
 

@@ -18,6 +18,19 @@ type FileState struct {
 	Inode        uint64 `json:"inode,omitempty"`         // Inode number for file identity
 	FileSize     int64  `json:"file_size,omitempty"`     // File size at last read, only saved on shutdown
 	LastModified int64  `json:"last_modified,omitempty"` // Unix timestamp, only saved on shutdown
+	mu           sync.RWMutex
+}
+
+func (f *FileState) IncrementLineNumber() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.LineNumber++
+}
+
+func (f *FileState) GetLineNumber() int64 {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.LineNumber
 }
 
 // AppState holds all persistent state for the application
@@ -136,9 +149,11 @@ func UpdateAllFileMetadata() {
 
 	log.Println("Updating file metadata before shutdown...")
 	for path, fileState := range globalState.Files {
+		fileState.mu.Lock()
 		info, err := os.Stat(path)
 		if err != nil {
 			log.Printf("Could not stat file %s for metadata update: %v", path, err)
+			fileState.mu.Unlock()
 			delete(globalState.Files, path)
 			continue
 		}
@@ -147,12 +162,15 @@ func UpdateAllFileMetadata() {
 		if inode, ok := getInode(info); ok {
 			fileState.Inode = inode
 		}
+		fileState.mu.Unlock()
 	}
 }
 
 // FindMatchingPosition determines if we can resume tailing based on file metadata.
 // It returns the line number to resume from and a boolean indicating if a match was found.
 func FindMatchingPosition(path string, storedState *FileState) (int64, bool) {
+	storedState.mu.RLock()
+	defer storedState.mu.RUnlock()
 	info, err := os.Stat(path)
 	if err != nil {
 		log.Printf("Error stating file for position matching %s: %v. Starting from beginning.", path, err)

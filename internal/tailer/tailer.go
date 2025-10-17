@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"log-enricher/internal/bufferpool"
@@ -17,6 +18,13 @@ import (
 type Line struct {
 	Buffer *bytes.Buffer
 }
+
+const (
+	INITIAL_BACKOFF_DELAY = 250 * time.Millisecond
+	MAX_BACKOFF_DELAY     = 5 * time.Second
+	BACKOFF_FACTOR        = 2
+	MAX_REOPEN_ATTEMPTS   = 10 // Maximum attempts to reopen a missing file
+)
 
 // Tailer is a struct that tails a file.
 type Tailer struct {
@@ -31,6 +39,10 @@ type Tailer struct {
 
 	offset int64
 	whence int
+
+	// Backoff fields for EOF handling
+	currentBackoff time.Duration
+	eofCount       int
 }
 
 // NewTailer creates a new Tailer.
@@ -44,6 +56,9 @@ func NewTailer(path string, offset int64, whence int) *Tailer {
 		cancel: cancel,
 		offset: offset,
 		whence: whence,
+
+		currentBackoff: INITIAL_BACKOFF_DELAY,
+		eofCount:       0,
 	}
 }
 
@@ -86,35 +101,63 @@ func (t *Tailer) run() {
 	t.reader = bufio.NewReader(t.file)
 
 	for {
+		// Check for context cancellation before attempting to read or process.
 		select {
 		case <-t.ctx.Done():
 			return
 		default:
+			// Continue
 		}
 
-		line, err := t.reader.ReadBytes('\n')
+		buf := bufferpool.GetByteBuffer() // Acquire buffer from pool
+		var err error
+		var lineBytes []byte
+		var isPrefix bool = true // Assume prefix initially, ReadLine will update
 
-		// If we read a line, process it. This handles the case where a file
-		// ends without a newline character before hitting EOF.
-		if len(line) > 0 {
-			buf := bufferpool.GetByteBuffer()
-			buf.Write(line)
-			t.Lines <- &Line{Buffer: buf}
+		// Read a complete line, potentially in multiple chunks
+		for isPrefix && err == nil {
+			lineBytes, isPrefix, err = t.reader.ReadLine()
+			if err == nil {
+				buf.Write(lineBytes)
+			}
 		}
 
+		// Handle errors from ReadLine
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				// Reached the end of the file, check for rotation/truncation.
-				if e := t.handleEOF(); e != nil {
-					t.Errors <- e
-					return
+				// If EOF and no data was read into buf, it's a pure EOF.
+				if buf.Len() == 0 {
+					bufferpool.PutByteBuffer(buf) // Return unused buffer
+					if e := t.handleEOF(); e != nil {
+						t.Errors <- e
+						return
+					}
+					continue // Continue loop to wait for more data
 				}
-				// Continue loop to wait for more data.
-				continue
+				// If EOF but data was read, treat it as a valid line.
+				// The next iteration will hit pure EOF.
+			} else {
+				// A non-EOF error occurred.
+				bufferpool.PutByteBuffer(buf) // Return buffer on error
+				t.Errors <- err
+				return
 			}
-			// A non-EOF error occurred.
-			t.Errors <- err
+		}
+
+		// Reset backoff since we successfully read a line
+		t.resetBackoff()
+
+		// If we reached here, buf contains a line (either full or partial before EOF).
+		// Send the line to the Lines channel.
+		select {
+		case <-t.ctx.Done():
+			// Context canceled while trying to send the line.
+			// Return the buffer to the pool before exiting.
+			bufferpool.PutByteBuffer(buf)
 			return
+		case t.Lines <- &Line{Buffer: buf}:
+			// Successfully sent the line. The watcher.LogWatcher#processLine function
+			// is now responsible for returning this buffer to the pool.
 		}
 	}
 }
@@ -129,24 +172,44 @@ func (t *Tailer) handleEOF() error {
 
 	info, err := t.file.Stat()
 	if err != nil {
+		// If we can't stat the file, it might have been deleted or permissions changed.
+		// Try to reopen.
+		if os.IsNotExist(err) {
+			log.Printf("File %s disappeared during stat, attempting to reopen.", t.path)
+			return t.reopen()
+		}
 		return err
 	}
 
-	// Check if the file has been truncated.
+	// Case 1: File was truncated.
 	if info.Size() < pos {
-		log.Printf("File %s was truncated, seeking to beginning.", t.path)
+		log.Printf("File %s was truncated (size %d < current pos %d), seeking to beginning.", t.path, info.Size(), pos)
+		t.resetBackoff() // Reset backoff on file change
 		if _, err := t.file.Seek(0, io.SeekStart); err != nil {
 			return err
 		}
-		t.reader.Reset(t.file)
+		t.reader.Reset(t.file) // Reset bufio.Reader to clear its buffer and read from start
 		return nil
 	}
 
-	// Check if the file has been rotated or deleted.
+	// Case 2: New data has been appended (file size increased).
+	// In this scenario, we should not backoff, but immediately try to read again.
+	if info.Size() > pos {
+		log.Printf("File %s has new data (size %d > current pos %d), attempting to read immediately.", t.path, info.Size(), pos)
+		t.resetBackoff() // Reset backoff as new data is available
+		// No need to seek or reset reader here, the next ReadLine will pick up new data
+		// because the underlying file has grown. The bufio.Reader will eventually
+		// read from the underlying file.
+		return nil
+	}
+
+	// Case 3: File was rotated or deleted (check inode/existence).
+	// This check comes after truncation and new data checks, as those are more immediate.
 	infoOnDisk, err := os.Stat(t.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Printf("File %s disappeared, attempting to reopen.", t.path)
+			// On file change reopen() already calls resetBackoff() internally
 			return t.reopen()
 		}
 		return err
@@ -155,11 +218,11 @@ func (t *Tailer) handleEOF() error {
 	// Compare the file on disk with the file we have open.
 	if !os.SameFile(info, infoOnDisk) {
 		log.Printf("File %s was rotated, opening new file.", t.path)
+		// On file change reopen() already calls resetBackoff() internally
 		return t.reopen()
 	}
 
-	// The file is the same and not truncated, so just wait for more content.
-	time.Sleep(250 * time.Millisecond)
+	t.applyBackoff()
 	return nil
 }
 
@@ -167,6 +230,8 @@ func (t *Tailer) handleEOF() error {
 // This is used for log rotation and deletion/recreation.
 func (t *Tailer) reopen() error {
 	t.file.Close()
+
+	reopenAttempts := 0 // Local counter for this specific reopen cycle
 
 	for {
 		select {
@@ -179,10 +244,16 @@ func (t *Tailer) reopen() error {
 				t.file = file
 				t.reader.Reset(t.file)
 				log.Printf("Successfully reopened file %s", t.path)
+				t.resetBackoff() // Reset backoff on successful reopen
 				return nil
 			}
 
 			if os.IsNotExist(err) {
+				reopenAttempts++
+				if reopenAttempts > MAX_REOPEN_ATTEMPTS {
+					log.Printf("Failed to reopen file %s after %d attempts. Giving up.", t.path, MAX_REOPEN_ATTEMPTS)
+					return fmt.Errorf("failed to reopen file %s after %d attempts", t.path, MAX_REOPEN_ATTEMPTS)
+				}
 				// File not there yet, wait a bit.
 				time.Sleep(500 * time.Millisecond)
 				continue
@@ -191,5 +262,24 @@ func (t *Tailer) reopen() error {
 			// Another type of error occurred.
 			return err
 		}
+	}
+}
+
+// resetBackoff resets the backoff state to its initial values.
+func (t *Tailer) resetBackoff() {
+	t.currentBackoff = INITIAL_BACKOFF_DELAY
+	t.eofCount = 0
+}
+
+// applyBackoff sleeps for the current backoff duration and then increases it exponentially.
+func (t *Tailer) applyBackoff() {
+	time.Sleep(t.currentBackoff)
+
+	t.eofCount++
+	nextBackoff := t.currentBackoff * BACKOFF_FACTOR
+	if nextBackoff > MAX_BACKOFF_DELAY {
+		t.currentBackoff = MAX_BACKOFF_DELAY
+	} else {
+		t.currentBackoff = nextBackoff
 	}
 }

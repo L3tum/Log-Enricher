@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // FileBackend writes enriched logs to separate files based on the original log's path.
@@ -27,13 +28,14 @@ func (b *FileBackend) Name() string {
 
 // Send writes the pre-marshaled entry to a corresponding .enriched file.
 // The incoming byte slice already contains a newline.
-func (b *FileBackend) Send(sourcePath string, entryAsBytes []byte) error {
+func (b *FileBackend) Send(sourcePath string, timestamp time.Time, entryAsBytes []byte) error {
 	writer, err := b.getWriter(sourcePath)
 	if err != nil {
 		return err
 	}
 
 	_, err = writer.Write(entryAsBytes)
+	_, err = writer.Write([]byte("\n"))
 	return err
 }
 

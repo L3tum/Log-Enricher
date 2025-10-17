@@ -53,12 +53,12 @@ func TestTailer(t *testing.T) {
 		defer tailer.Stop()
 
 		// Assert initial lines
-		assert.Equal(t, "line 1\n", (<-tailer.Lines).Buffer.String())
-		assert.Equal(t, "line 2\n", (<-tailer.Lines).Buffer.String())
+		assert.Equal(t, "line 1", (<-tailer.Lines).Buffer.String())
+		assert.Equal(t, "line 2", (<-tailer.Lines).Buffer.String())
 
 		// Append a new line
 		appender("line 3\n")
-		assert.Equal(t, "line 3\n", (<-tailer.Lines).Buffer.String())
+		assert.Equal(t, "line 3", (<-tailer.Lines).Buffer.String())
 	})
 
 	t.Run("Handles file truncation", func(t *testing.T) {
@@ -82,7 +82,7 @@ func TestTailer(t *testing.T) {
 		// The tailer should detect truncation and read the new line
 		select {
 		case line := <-tailer.Lines:
-			assert.Equal(t, "new line 1\n", line.Buffer.String())
+			assert.Equal(t, "new line 1", line.Buffer.String())
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for line after truncation")
 		}
@@ -110,7 +110,7 @@ func TestTailer(t *testing.T) {
 
 		select {
 		case line := <-tailer.Lines:
-			assert.Equal(t, "new file line 1\n", line.Buffer.String())
+			assert.Equal(t, "new file line 1", line.Buffer.String())
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for line after rotation")
 		}

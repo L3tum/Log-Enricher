@@ -83,7 +83,7 @@ func (b *LokiBackend) Name() string {
 }
 
 // Send uses the pre-marshaled entry and sends it to Loki.
-func (b *LokiBackend) Send(sourcePath string, entryAsBytes []byte) error {
+func (b *LokiBackend) Send(sourcePath string, timestamp time.Time, entryAsBytes []byte) error {
 	// Use the sourcePath's filename as a label for better context in Loki.
 	appName := filepath.Base(filepath.Dir(sourcePath))
 	if appName == "." || appName == "/" || appName == "" {
@@ -95,11 +95,14 @@ func (b *LokiBackend) Send(sourcePath string, entryAsBytes []byte) error {
 		"app":         model.LabelValue(appName),
 	}
 
-	// The JSON encoder adds a newline, which we must trim before sending to Loki.
-	line := bytes.TrimSuffix(entryAsBytes, []byte("\n"))
+	// We have to copy the line over because otherwise Loki will wait sending it and the buffer will be returned to the pool
+	// before the line is sent.
+	// TODO: According to Go docs the string constructor should take a copy of the byte slice
+	// TODO: So this should be unnecessary, but it's not. Investigate.
+	copiedLine := bytes.Clone(entryAsBytes)
 
 	// The Loki client handles batching and sending internally.
-	err := b.client.Handle(labels, time.Now(), string(line))
+	err := b.client.Handle(labels, timestamp, string(copiedLine))
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"log"
+	"log-enricher/internal/bufferpool"
 	"os"
 	"strings"
 	"sync"
@@ -16,14 +17,20 @@ import (
 // mockBackendManager is a mock implementation of the backends.Manager.
 type mockBackendManager struct {
 	lastSource string
-	lastEntry  map[string]interface{}
+	lastInput  map[string]interface{}
 	callCount  int
 }
 
 // Broadcast records the call and its arguments for later assertion.
-func (m *mockBackendManager) Broadcast(source string, entry map[string]interface{}) {
+func (m *mockBackendManager) Broadcast(source string, entry bufferpool.LogEntry) {
 	m.lastSource = source
-	m.lastEntry = entry
+
+	// Make a copy of the Fields map to avoid issues with pooling.
+	m.lastInput = make(map[string]interface{}, len(entry.Fields))
+	for k, v := range entry.Fields {
+		m.lastInput[k] = v
+	}
+
 	m.callCount++
 }
 
@@ -83,5 +90,5 @@ func TestDualLogger(t *testing.T) {
 		"message": testMessage,
 		"source":  "internal",
 	}
-	assert.Equal(t, expectedEntry, mockManager.lastEntry, "Broadcast entry has incorrect content")
+	assert.Equal(t, expectedEntry, mockManager.lastInput, "Broadcast entry has incorrect content")
 }

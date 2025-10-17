@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"log"
+	"log-enricher/internal/bufferpool"
 	"strings"
 
 	"log-enricher/internal/cache"
@@ -28,18 +29,18 @@ type EnrichmentStage struct {
 
 // EnrichmentStageConfig defines which sub-enrichments are enabled for this stage.
 type EnrichmentStageConfig struct {
-	EnableHostname bool                      `mapstructure:"enable_hostname"`
-	EnableGeoIP    bool                      `mapstructure:"enable_geoip"`
-	EnableCrowdsec bool                      `mapstructure:"enable_crowdsec"`
-	HostnameConfig enrichment.HostnameConfig `mapstructure:"hostname,omitempty"`
-	GeoIpConfig    enrichment.GeoIpConfig    `mapstructure:"geoip,omitempty"`
-	CrowdsecConfig enrichment.CrowdsecConfig `mapstructure:"crowdsec,omitempty"`
+	EnableHostname            bool                      `mapstructure:"enable_hostname"`
+	EnableGeoIP               bool                      `mapstructure:"enable_geoip"`
+	EnableCrowdsec            bool                      `mapstructure:"enable_crowdsec"`
+	HostnameConfig            enrichment.HostnameConfig `mapstructure:"hostname,omitempty"`
+	enrichment.GeoIpConfig    `mapstructure:",squash"`  // Use squash to flatten GeoIpConfig fields
+	enrichment.CrowdsecConfig `mapstructure:",squash"`  // Use squash to flatten CrowdsecConfig fields
 }
 
 // NewEnrichmentStage creates a new enrichment stage.
 func NewEnrichmentStage(params map[string]interface{}) (Stage, error) {
 	var stageConfig EnrichmentStageConfig
-	if err := mapstructure.Decode(params, &stageConfig); err != nil {
+	if err := mapstructure.WeakDecode(params, &stageConfig); err != nil {
 		return nil, fmt.Errorf("failed to decode enrichment stage config: %w", err)
 	}
 
@@ -93,14 +94,14 @@ func (s *EnrichmentStage) PerformEnrichment(clientIP string, result *models.Resu
 }
 
 // Process extracts an IP from the log entry and applies all configured enrichments.
-func (s *EnrichmentStage) Process(line []byte, entry map[string]interface{}) (bool, map[string]interface{}, error) {
+func (s *EnrichmentStage) Process(line []byte, entry *bufferpool.LogEntry) (bool, error) {
 	if len(s.enrichers) == 0 || entry == nil {
-		return true, entry, nil // Nothing to do.
+		return true, nil // Nothing to do.
 	}
 
-	clientIP, ok := entry[ExtractedIPKey].(string)
+	clientIP, ok := entry.Fields[ExtractedIPKey].(string)
 	if !ok || clientIP == "" {
-		return true, entry, nil // No IP found to enrich.
+		return true, nil // No IP found to enrich.
 	}
 
 	var result models.Result
@@ -111,19 +112,15 @@ func (s *EnrichmentStage) Process(line []byte, entry map[string]interface{}) (bo
 		}
 	}
 
-	applyEnrichmentResult(entry, result)
-
-	return true, entry, nil
-}
-
-func applyEnrichmentResult(entry map[string]interface{}, result models.Result) {
 	if result.Hostname != "" {
-		entry["client_hostname"] = result.Hostname
+		entry.Fields["client_hostname"] = result.Hostname
 	}
 	if result.Geo != nil && result.Geo.Country != "" {
-		entry["client_country"] = result.Geo.Country
+		entry.Fields["client_country"] = result.Geo.Country
 	}
-	if result.Crowdsec != nil && result.Crowdsec.IsBanned {
-		entry["crowdsec_banned"] = true
+	if result.Crowdsec != nil {
+		entry.Fields["crowdsec_banned"] = result.Crowdsec.IsBanned
 	}
+
+	return true, nil
 }

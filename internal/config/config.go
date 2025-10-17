@@ -15,6 +15,8 @@ type Config struct {
 	LogBasePath                string
 	LogFileExtensions          []string
 	PlaintextProcessingEnabled bool
+	ParseTimestampEnabled      bool
+	TimestampFields            []string
 	Backends                   []string
 	LokiURL                    string
 	EnrichedFileSuffix         string
@@ -33,7 +35,9 @@ func Load() *Config {
 		StateFilePath:              getEnv("STATE_FILE_PATH", "/cache/state.json"),
 		RequeryInterval:            getEnvDuration("REQUERY_INTERVAL", 5*time.Minute),
 		LogBasePath:                getEnv("LOG_BASE_PATH", "/logs"),
-		PlaintextProcessingEnabled: getEnvBool("PLAINTEXT_PROCESSING_ENABLED", true),
+		PlaintextProcessingEnabled: getEnvBool("PLAINTEXT_PROCESSING_ENABLED", false),
+		ParseTimestampEnabled:      getEnvBool("PARSE_TIMESTAMP_ENABLED", true),
+		TimestampFields:            getEnvSlice("TIMESTAMP_FIELDS", []string{"time", "timestamp", "Timestamp", "ts", "date", "created_at", "CreatedAt", "starttime", "StartTime"}),
 		LogFileExtensions:          getEnvSlice("LOG_FILE_EXTENSIONS", []string{".log"}),
 		Backends:                   getEnvSlice("BACKENDS", []string{"file"}),
 		LokiURL:                    getEnv("LOKI_URL", ""),

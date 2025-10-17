@@ -16,10 +16,24 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/goccy/go-json"
 )
+
+// Common timestamp layouts to try for parsing.
+// This list can be extended based on common log formats.
+var timestampLayouts = []string{
+	time.RFC3339Nano,
+	time.RFC3339,
+	"2006-01-02T15:04:05.000Z07:00", // ISO 8601 with milliseconds and timezone
+	"2006-01-02T15:04:05Z07:00",     // ISO 8601 with timezone
+	"2006-01-02 15:04:05.000",       // Common format with milliseconds
+	"2006-01-02 15:04:05",           // Common format
+	"Jan _2 15:04:05",               // Syslog-like without year
+	"Jan _2 15:04:05.000",           // Syslog-like with milliseconds
+}
 
 type LogWatcher struct {
 	cfg         *config.Config
@@ -70,8 +84,9 @@ func (lw *LogWatcher) tailFile(ctx context.Context, path string) {
 
 	// Determine starting position
 	var offset int64 = 0
-	var whence = io.SeekEnd
-	if fileState.LineNumber > 0 {
+	var whence = io.SeekStart // Default to SeekStart to process all existing content
+
+	if fileState.GetLineNumber() > 0 {
 		if matchedLine, found := state.FindMatchingPosition(path, fileState); found {
 			log.Printf("State match for %s, will resume processing after line %d", path, matchedLine)
 			offset = matchedLine + 1
@@ -82,14 +97,14 @@ func (lw *LogWatcher) tailFile(ctx context.Context, path string) {
 			whence = io.SeekStart
 		}
 	} else {
-		log.Printf("No state for %s, starting from end.", path)
+		log.Printf("No state for %s, starting from beginning.", path)
+		// offset and whence are already 0 and io.SeekStart by default
 	}
 
 	t := tailer.NewTailer(path, offset, whence)
 	t.Start()
 	log.Printf("Tailing %s...", path)
 
-	var currentLine int64 = 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -109,20 +124,17 @@ func (lw *LogWatcher) tailFile(ctx context.Context, path string) {
 				return
 			}
 
-			currentLine++
-
 			lw.processLine(path, line.Buffer)
 
-			// Ensure the buffer is returned to the pool after we're done with it.
-			bufferpool.PutByteBuffer(line.Buffer)
-
 			// Update state in memory.
-			fileState.LineNumber = currentLine
+			fileState.IncrementLineNumber()
 		}
 	}
 }
 
 func (lw *LogWatcher) processLine(path string, line *bytes.Buffer) {
+	// Ensure the buffer is returned to the pool after we're done with it.
+	defer bufferpool.PutByteBuffer(line)
 	logEntry := bufferpool.GetLogEntry()
 	defer bufferpool.PutLogEntry(logEntry)
 
@@ -130,25 +142,48 @@ func (lw *LogWatcher) processLine(path string, line *bytes.Buffer) {
 	plainText := false
 
 	// Fast heuristic: If the line doesn't start with '{', assume it's not a JSON object.
-	if len(lineBytes) > 0 && lineBytes[0] == '{' && json.Unmarshal(lineBytes, &logEntry) == nil {
+	if len(lineBytes) > 0 && lineBytes[0] == '{' && json.Unmarshal(lineBytes, &logEntry.Fields) == nil {
 		// Do nothing it's JSON and been processed by Unmarshal
 	} else {
 		// It's plain text.
-		logEntry["message"] = line.String()
+		logEntry.Fields["message"] = line.String()
 		plainText = true
+	}
+
+	if !lw.cfg.ParseTimestampEnabled || !lw.ExtractTimestampToCommonField(&logEntry) {
+		logEntry.Timestamp = time.Now()
 	}
 
 	// Run through pipeline
 	if (plainText && lw.cfg.PlaintextProcessingEnabled) || !plainText {
-		drop, enrichedLogEntry := lw.manager.Process(lineBytes, logEntry)
+		drop := lw.manager.Process(lineBytes, &logEntry)
 		if drop == true {
 			// Drop the line if it was dropped by the pipeline
 			return
 		}
-		lw.backends.Broadcast(path, enrichedLogEntry)
+		lw.backends.Broadcast(path, logEntry)
 	} else {
 		lw.backends.Broadcast(path, logEntry)
 	}
+}
+
+func (lw *LogWatcher) ExtractTimestampToCommonField(logEntry *bufferpool.LogEntry) bool {
+	for _, field := range lw.cfg.TimestampFields {
+		if val, ok := logEntry.Fields[field]; ok {
+			if timestampStr, isString := val.(string); isString && timestampStr != "" {
+				for _, layout := range timestampLayouts {
+					if t, err := time.Parse(layout, timestampStr); err == nil {
+						logEntry.Timestamp = t
+						return true
+					}
+				}
+				// If parsing failed for all layouts, log a warning but continue.
+				log.Printf("Warning: Could not parse timestamp '%s' from field '%s' using known layouts.", timestampStr, field)
+			}
+		}
+	}
+
+	return false
 }
 
 func (lw *LogWatcher) startTailingFile(parentCtx context.Context, path string) {

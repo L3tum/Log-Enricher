@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log-enricher/internal/bufferpool"
 	"os"
 	"strings"
 
@@ -39,11 +40,12 @@ func (d *dualLogger) Write(p []byte) (n int, err error) {
 
 	// 2. Format as a structured log and send to backends.
 	// The source path "internal" is used to distinguish app logs from processed logs.
-	logEntry := map[string]interface{}{
-		"level":   "info", // Standard logger doesn't have levels, so we default to info.
-		"message": strings.TrimSpace(string(p)),
-		"source":  "internal",
-	}
+	logEntry := bufferpool.GetLogEntry()
+	defer bufferpool.PutLogEntry(logEntry)
+	logEntry.Fields["level"] = "info"
+	logEntry.Fields["message"] = strings.TrimSpace(string(p))
+	logEntry.Fields["source"] = "internal"
+
 	d.backends.Broadcast("internal", logEntry)
 
 	return n, nil

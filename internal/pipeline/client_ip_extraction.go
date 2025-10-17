@@ -3,6 +3,7 @@ package pipeline
 import (
 	"fmt"
 	"log"
+	"log-enricher/internal/bufferpool"
 	"regexp"
 
 	"github.com/mitchellh/mapstructure"
@@ -29,7 +30,7 @@ type ClientIpExtractionStage struct {
 // NewClientIpExtractionStage creates a new IP extraction stage.
 func NewClientIpExtractionStage(params map[string]interface{}) (Stage, error) {
 	var config ClientIpExtractionStageConfig
-	if err := mapstructure.Decode(params, &config); err != nil {
+	if err := mapstructure.WeakDecode(params, &config); err != nil {
 		return nil, fmt.Errorf("failed to decode client ip extraction stage config: %w", err)
 	}
 	if len(config.ClientIPFields) == 0 {
@@ -45,49 +46,57 @@ func (s *ClientIpExtractionStage) Name() string {
 }
 
 // Process finds the IP and adds it to the entry.
-func (s *ClientIpExtractionStage) Process(line []byte, entry map[string]interface{}) (bool, map[string]interface{}, error) {
+func (s *ClientIpExtractionStage) Process(line []byte, entry *bufferpool.LogEntry) (bool, error) {
 	if entry == nil {
-		return true, entry, nil // Nothing to process.
+		return true, nil // Nothing to process.
 	}
 
 	for _, field := range s.config.ClientIPFields {
-		if val, ok := entry[field]; ok {
+		if val, ok := entry.Fields[field]; ok {
 			if ip, isString := val.(string); isString && ip != "" {
-				entry[ExtractedIPKey] = ip
+				entry.Fields[ExtractedIPKey] = ip
 				// Found it, no need to check other fields.
 				// Delete all other fields though
 				deleteFields(entry, s.config.ClientIPFields)
 
-				return true, entry, nil
+				return true, nil
 			}
 		}
 	}
 
 	if s.config.RegexEnabled {
-		if msgVal, ok := entry["msg"]; ok {
+		if msgVal, ok := entry.Fields["message"]; ok {
 			if msgStr, isString := msgVal.(string); isString {
 				ip := ipRegex.FindString(msgStr)
 				if ip != "" {
-					entry[ExtractedIPKey] = ip
-					return true, entry, nil
+					entry.Fields[ExtractedIPKey] = ip
+					return true, nil
+				}
+			}
+		} else if msgVal, ok := entry.Fields["msg"]; ok {
+			if msgStr, isString := msgVal.(string); isString {
+				ip := ipRegex.FindString(msgStr)
+				if ip != "" {
+					entry.Fields[ExtractedIPKey] = ip
+					return true, nil
 				}
 			}
 		} else {
-			// Also try to find the IP in the log line itself, but only if there is no msg field
+			// Also try to find the IP in the log line itself, but only if there is no message field
 			if ip := ipRegex.Find(line); ip != nil {
-				entry[ExtractedIPKey] = string(ip)
-				return true, entry, nil
+				entry.Fields[ExtractedIPKey] = string(ip)
+				return true, nil
 			}
 		}
 	}
 
-	return true, entry, nil // Keep log even if IP not found.
+	return true, nil // Keep log even if IP not found.
 }
 
-func deleteFields(entry map[string]interface{}, fields []string) {
+func deleteFields(entry *bufferpool.LogEntry, fields []string) {
 	for _, field := range fields {
 		if field != ExtractedIPKey {
-			delete(entry, field)
+			delete(entry.Fields, field)
 		}
 	}
 }

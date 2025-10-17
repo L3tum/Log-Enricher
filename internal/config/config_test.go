@@ -21,8 +21,8 @@ func TestLoadConfig(t *testing.T) {
 		if cfg.RequeryInterval != 5*time.Minute {
 			t.Errorf("expected default RequeryInterval to be 5m, got %v", cfg.RequeryInterval)
 		}
-		if cfg.PlaintextProcessingEnabled != true {
-			t.Errorf("expected default PlaintextProcessingEnabled to be true, got %v", cfg.PlaintextProcessingEnabled)
+		if cfg.PlaintextProcessingEnabled != false {
+			t.Errorf("expected default PlaintextProcessingEnabled to be false, got %v", cfg.PlaintextProcessingEnabled)
 		}
 		if cfg.LokiURL != "" {
 			t.Errorf("expected default LokiURL to be empty, got %s", cfg.LokiURL)

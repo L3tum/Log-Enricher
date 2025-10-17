@@ -101,6 +101,7 @@ This stage enriches the log entry with data based on the extracted client_ip. It
 | geoip_database_path | Path to the MaxMind GeoIP database file. | /geoip/GeoLite2-City.mmdb |
 | crowdsec_lapi_url | URL for the CrowdSec LAPI. | http://crowdsec:8080 |
 | crowdsec_lapi_key | API Key for the CrowdSec LAPI. | yoursupersecretkey |
+| max_age | Maximum age of a log in seconds. Logs older than this will be dropped. | 3600 |
 
 **Example**
 
@@ -136,6 +137,8 @@ STAGE_2_MATCH=any
 STAGE_2_REGEX=(?i)bot
 STAGE_2_JSON_FIELD=user_agent
 STAGE_2_JSON_VALUE=HealthChecker
+# Drop logs older than 1 hour
+STAGE_2_MAX_AGE=3600
 ````
 
 **Full Pipeline Example**

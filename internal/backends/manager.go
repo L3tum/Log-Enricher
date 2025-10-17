@@ -12,7 +12,7 @@ import (
 
 // Manager is the public interface for a backend manager that can broadcast entries and be shut down.
 type Manager interface {
-	Broadcast(sourcePath string, entry map[string]interface{})
+	Broadcast(sourcePath string, entry bufferpool.LogEntry)
 	Shutdown()
 }
 
@@ -56,27 +56,21 @@ func NewManager(cfg *config.Config) (Manager, error) {
 }
 
 // Broadcast marshals the entry to JSON once and sends the resulting bytes to all enabled backends.
-func (m *manager) Broadcast(sourcePath string, entry map[string]interface{}) {
+func (m *manager) Broadcast(sourcePath string, entry bufferpool.LogEntry) {
 	if len(m.backends) == 0 {
 		return
 	}
 
-	// GetByteBuffer a buffer from the pool.
-	buf := bufferpool.GetByteBuffer()
-	// Ensure the buffer is returned to the pool when we're done.
-	defer bufferpool.PutByteBuffer(buf)
+	var lineBytes []byte
+	var err error
 
-	// Use a JSON encoder to write directly into the buffer, which is more efficient.
-	// Note: The encoder automatically adds a newline character.
-	if err := json.NewEncoder(buf).Encode(entry); err != nil {
+	if lineBytes, err = json.Marshal(entry.Fields); err != nil {
 		log.Printf("Error marshaling log entry for backends: %v", err)
 		return
 	}
 
-	lineBytes := buf.Bytes()
-
 	for _, b := range m.backends {
-		if err := b.Send(sourcePath, lineBytes); err != nil {
+		if err := b.Send(sourcePath, entry.Timestamp, lineBytes); err != nil {
 			log.Printf("Error sending to backend '%s': %v", b.Name(), err)
 		}
 	}

@@ -11,9 +11,9 @@ func TestLogEntryPool(t *testing.T) {
 	t.Run("Get and Put clears the map", func(t *testing.T) {
 		// Get a map and add data to it
 		logEntry := GetLogEntry()
-		logEntry["message"] = "hello"
-		logEntry["level"] = "info"
-		assert.Len(t, logEntry, 2)
+		logEntry.Fields["message"] = "hello"
+		logEntry.Fields["level"] = "info"
+		assert.Len(t, logEntry.Fields, 2)
 
 		// Put it back
 		PutLogEntry(logEntry)
@@ -21,7 +21,7 @@ func TestLogEntryPool(t *testing.T) {
 		// Get another map (might be the same one)
 		logEntry2 := GetLogEntry()
 		// It should be empty because PutLogEntry clears it
-		assert.Len(t, logEntry2, 0, "map should be empty after being retrieved from pool")
+		assert.Len(t, logEntry2.Fields, 0, "map should be empty after being retrieved from pool")
 	})
 
 	t.Run("Concurrency test", func(t *testing.T) {
@@ -37,8 +37,8 @@ func TestLogEntryPool(t *testing.T) {
 				defer wg.Done()
 				for j := 0; j < numOperations; j++ {
 					entry := GetLogEntry()
-					entry["key"] = "value"
-					assert.Len(t, entry, 1)
+					entry.Fields["key"] = "value"
+					assert.Len(t, entry.Fields, 1)
 					PutLogEntry(entry)
 				}
 			}()

@@ -2,7 +2,9 @@ package pipeline
 
 import (
 	"fmt"
+	"log-enricher/internal/bufferpool"
 	"regexp"
+	"time"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -10,7 +12,7 @@ import (
 // FilterStage drops or keeps logs based on configurable rules.
 type FilterStage struct {
 	config FilterStageConfig
-	rules  []func(line []byte, entry map[string]interface{}) bool
+	rules  []func(line []byte, entry *bufferpool.LogEntry) bool
 }
 
 // FilterStageConfig defines the rules for a filter stage.
@@ -22,12 +24,13 @@ type FilterStageConfig struct {
 	JSONValue string `mapstructure:"json_value"` // Regex to match against the JSON field's value.
 	MinSize   int    `mapstructure:"min_size"`   // Minimum line size in characters.
 	MaxSize   int    `mapstructure:"max_size"`   // Maximum line size in characters.
+	MaxAge    int    `mapstructure:"max_age"`    // Maximum age of a log in seconds.
 }
 
 // NewFilterStage creates a new instance of a filter stage from its config.
 func NewFilterStage(params map[string]interface{}) (*FilterStage, error) {
 	var config FilterStageConfig
-	if err := mapstructure.Decode(params, &config); err != nil {
+	if err := mapstructure.WeakDecode(params, &config); err != nil {
 		return nil, fmt.Errorf("failed to decode filter stage config: %w", err)
 	}
 
@@ -40,14 +43,14 @@ func NewFilterStage(params map[string]interface{}) (*FilterStage, error) {
 	}
 
 	s := &FilterStage{config: config}
-	rules := make([]func(line []byte, entry map[string]interface{}) bool, 0, 3)
+	rules := make([]func(line []byte, entry *bufferpool.LogEntry) bool, 0, 3)
 
 	if config.Regex != "" {
 		regex, err := regexp.Compile(config.Regex)
 		if err != nil {
 			return nil, fmt.Errorf("invalid regex for filter stage: %w", err)
 		}
-		rules = append(rules, func(line []byte, entry map[string]interface{}) bool {
+		rules = append(rules, func(line []byte, entry *bufferpool.LogEntry) bool {
 			return regex.Match(line)
 		})
 	}
@@ -55,7 +58,7 @@ func NewFilterStage(params map[string]interface{}) (*FilterStage, error) {
 	if config.MinSize > 0 || config.MaxSize > 0 {
 		minSize := config.MinSize
 		maxSize := config.MaxSize
-		rules = append(rules, func(line []byte, entry map[string]interface{}) bool {
+		rules = append(rules, func(line []byte, entry *bufferpool.LogEntry) bool {
 			lineLen := len(line)
 			if minSize > 0 && lineLen < minSize {
 				return false
@@ -73,11 +76,11 @@ func NewFilterStage(params map[string]interface{}) (*FilterStage, error) {
 			return nil, fmt.Errorf("invalid json_value regex for filter stage: %w", err)
 		}
 		jsonField := config.JSONField
-		rules = append(rules, func(line []byte, entry map[string]interface{}) bool {
+		rules = append(rules, func(line []byte, entry *bufferpool.LogEntry) bool {
 			if entry == nil {
 				return false
 			}
-			fieldVal, ok := entry[jsonField]
+			fieldVal, ok := entry.Fields[jsonField]
 			if !ok {
 				return false
 			}
@@ -85,6 +88,15 @@ func NewFilterStage(params map[string]interface{}) (*FilterStage, error) {
 				return jsonValRegex.MatchString(valStr)
 			}
 			return false
+		})
+	}
+
+	if config.MaxAge > 0 {
+		rules = append(rules, func(line []byte, entry *bufferpool.LogEntry) bool {
+			if entry == nil {
+				return false
+			}
+			return entry.Timestamp.Add(time.Duration(config.MaxAge) * time.Second).After(time.Now())
 		})
 	}
 
@@ -97,9 +109,9 @@ func (s *FilterStage) Name() string {
 }
 
 // Process applies the filter rules to a log entry.
-func (s *FilterStage) Process(line []byte, entry map[string]interface{}) (bool, map[string]interface{}, error) {
+func (s *FilterStage) Process(line []byte, entry *bufferpool.LogEntry) (bool, error) {
 	if len(s.rules) == 0 {
-		return true, entry, nil // No rules defined, so we keep the log.
+		return true, nil // No rules defined, so we keep the log.
 	}
 
 	// Evaluate rules with short-circuiting.
@@ -129,5 +141,5 @@ func (s *FilterStage) Process(line []byte, entry map[string]interface{}) (bool, 
 	// If action is "drop", we keep if NO match is found. `keep = !finalMatch`
 	// This is equivalent to: (s.config.Action == "keep") == finalMatch
 	shouldKeep := (s.config.Action == "keep") == finalMatch
-	return shouldKeep, entry, nil
+	return shouldKeep, nil
 }
