@@ -1,0 +1,27 @@
+{
+  "name": "log-enricher-go1.24",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "postCreateCommand": "go mod download",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "openai.chatgpt"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "gopls": {
+          "formatting.gofumpt": true
+        }
+      }
+    }
+  },
+  "mounts": [
+    "source=logenricher-codex-home,target=/home/vscode/.codex,type=volume",
+    "source=logenricher-codex-config,target=/home/vscode/.config/codex,type=volume"
+  ]
+}

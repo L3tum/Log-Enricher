@@ -1,66 +1,152 @@
 package bufferpool
 
 import (
-	"sync"
+	"log-enricher/internal/models"
+	"log/slog"
 	"time"
 )
 
-type LogEntry struct {
-	Fields    map[string]interface{}
-	Timestamp time.Time
+// logEntryPool manages a pool of models.LogEntry instances.
+type logEntryPool struct {
+	pool                   chan *models.LogEntry // Channel for available objects, directly holding interface{} values
+	size                   int
+	new                    func() *models.LogEntry // Function to create new objects, returning models.LogEntry (interface{})
+	tinyFieldCount         uint32                  // Number of tiny log entries (5 fields)
+	verySmallFieldCount    uint32                  // Number of very small log entries (6-10 fields)
+	smallFieldCount        uint32                  // Number of small log entries (11-20 fields)
+	mediumFieldCount       uint32                  // Number of medium log entries (20-40 fields)
+	largeFieldCount        uint32                  // Number of large log entries (40-60 fields)
+	hugeFieldCount         uint32                  // Number of huge log entries (60+ fields)
+	currentIdealFieldCount uint32
+	fieldCountChan         chan uint32
 }
 
-const INITIAL_FIELD_COUNT = 30
-const MAX_FIELD_COUNT = 40
+var LogEntryPool *logEntryPool = newLogEntryPool(100)
 
-// MAX_IN_FLIGHT_LOG_ENTRIES defines the maximum number of LogEntry objects that can be
-// "in-flight" (i.e., checked out from the pool) at any given time.
-// This prevents unbounded memory growth under high load.
-const MAX_IN_FLIGHT_LOG_ENTRIES = 5000
-
-func NewLogEntry() LogEntry {
-	return LogEntry{
-		// Pre-allocate with a reasonable capacity to avoid resizing for common logs.
-		Fields:    make(map[string]interface{}, INITIAL_FIELD_COUNT),
-		Timestamp: time.Now(),
-	}
-}
-
-func (l LogEntry) ClearFields() {
-	for k := range l.Fields {
-		delete(l.Fields, k)
-	}
-}
-
-var (
-	logEntryPool = sync.Pool{
-		New: func() interface{} {
-			return NewLogEntry()
-		},
+// NewLogEntryPool creates a new pool with the specified size.
+func newLogEntryPool(size int) *logEntryPool {
+	// The channel now holds models.LogEntry (interface{}) directly.
+	pool := make(chan *models.LogEntry, size)
+	op := &logEntryPool{
+		pool:           pool,
+		size:           size,
+		new:            func() *models.LogEntry { return &models.LogEntry{Fields: make(map[string]interface{}, 20)} },
+		fieldCountChan: make(chan uint32, size),
 	}
 
-	// logEntrySemaphore is a channel used as a semaphore to limit the number
-	// of in-flight log entries.
-	logEntrySemaphore = make(chan struct{}, MAX_IN_FLIGHT_LOG_ENTRIES)
-)
+	// Pre-fill the pool with initial objects
+	for i := 0; i < size; i++ {
+		// Create the object and send it to the channel.
+		op.pool <- op.new()
+	}
 
-// GetLogEntry retrieves a LogEntry from the pool. It will block if the maximum
-// number of in-flight log entries has been reached.
-func GetLogEntry() LogEntry {
-	// Acquire a token from the semaphore. This will block if the channel is full.
-	logEntrySemaphore <- struct{}{}
-	return logEntryPool.Get().(LogEntry)
+	go op.manageFieldCount()
+
+	return op
 }
 
-func PutLogEntry(logEntry LogEntry) {
-	<-logEntrySemaphore
+// Acquire gets an object from the pool. Blocks if no objects are available.
+// It returns the models.LogEntry (interface{}) directly.
+func (op *logEntryPool) Acquire() *models.LogEntry {
+	obj := <-op.pool
+	return obj
+}
 
-	// make sure we don't put too many Fields into the pool'
-	if len(logEntry.Fields) > MAX_FIELD_COUNT {
+// Release returns an object to the pool.
+// It accepts the models.LogEntry (interface{}) directly.
+func (op *logEntryPool) Release(obj *models.LogEntry) {
+	if obj == nil {
 		return
 	}
 
-	// make sure it's empty before returning it to the pool
-	logEntry.ClearFields()
-	logEntryPool.Put(logEntry)
+	op.adjustFieldSize(obj)
+
+	obj.Timestamp = time.Time{}
+	obj.App = ""
+
+	op.pool <- obj
+}
+
+// manageFieldCount is started as a goroutine
+// It receives the number of field entries in the log entry and adjusts the optimal size of the fields map accordingly.
+func (op *logEntryPool) manageFieldCount() {
+	// First adjustment should be pretty soon so in around one minute
+	lastAdjustment := time.Now().Add(-9 * time.Minute)
+
+	for {
+		select {
+		case count, ok := <-op.fieldCountChan:
+			// Channel closed, stop the goroutine
+			if !ok {
+				return
+			}
+
+			if count < 6 {
+				op.tinyFieldCount++
+			} else if count < 11 {
+				op.verySmallFieldCount++
+			} else if count < 21 {
+				op.smallFieldCount++
+			} else if count < 41 {
+				op.mediumFieldCount++
+			} else if count < 61 {
+				op.largeFieldCount++
+			} else {
+				op.hugeFieldCount++
+			}
+
+			// Do an adjustment every 10 minutes
+			if lastAdjustment.Before(time.Now().Add(-10 * time.Minute)) {
+				lastAdjustment = time.Now()
+
+				maxCount := op.tinyFieldCount
+				maxSize := uint32(5)
+
+				if op.verySmallFieldCount > maxCount {
+					maxCount = op.verySmallFieldCount
+					maxSize = 10
+				}
+				if op.smallFieldCount > maxCount {
+					maxCount = op.smallFieldCount
+					maxSize = 20
+				}
+				if op.mediumFieldCount > maxCount {
+					maxSize = 40
+				}
+				if op.largeFieldCount > maxCount {
+					maxSize = 60
+				}
+				if op.hugeFieldCount > maxCount {
+					// Just keep the current size of the logEntry field
+					maxSize = 100
+				}
+				op.currentIdealFieldCount = maxSize
+				slog.Info("Current ideal field count", "fieldCount", op.currentIdealFieldCount)
+				slog.Info("Distribution", "tiny", op.tinyFieldCount, "verySmall", op.verySmallFieldCount, "small", op.smallFieldCount, "medium", op.mediumFieldCount, "large", op.largeFieldCount, "huge", op.hugeFieldCount)
+			}
+		}
+	}
+}
+
+// adjustFieldSize adjusts the size of the fields map of the log entry.
+func (op *logEntryPool) adjustFieldSize(logEntry *models.LogEntry) {
+	maxSize := int(op.currentIdealFieldCount)
+
+	// Send the current field count to the channel
+	if logEntry.Fields != nil && len(logEntry.Fields) > 0 {
+		op.fieldCountChan <- uint32(len(logEntry.Fields))
+	}
+
+	// Reduce the size of the fields map if necessary
+	// len(fields) - maxSize returns the number of fields that can be removed
+	// i.e. that the field count is currently over the current optimal maximum.
+	// With the exception of 100, which just is a very large amount of fields and thus
+	// we just keep the count as is
+	if logEntry.Fields == nil || (len(logEntry.Fields)-maxSize > 0 && maxSize < 100) {
+		logEntry.Fields = make(map[string]interface{}, maxSize)
+	} else {
+		for k, _ := range logEntry.Fields {
+			delete(logEntry.Fields, k)
+		}
+	}
 }

@@ -2,94 +2,101 @@ package main
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"log-enricher/internal/pipeline"
+	"log-enricher/internal/tailer"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"log-enricher/internal/backends"
-	"log-enricher/internal/cache"
 	"log-enricher/internal/config"
 	"log-enricher/internal/logging"
-	"log-enricher/internal/network"
-	"log-enricher/internal/requery"
 	"log-enricher/internal/state"
-	"log-enricher/internal/watcher"
 )
 
 func main() {
 	// Load configuration
 	cfg := config.Load()
 
-	// Initialize unified state
-	if err := state.Initialize(cfg.StateFilePath); err != nil {
-		log.Fatalf("Failed to initialize state: %v", err)
-	}
-
-	// Initialize Backends
-	backendManager, err := backends.NewManager(cfg)
-	if err != nil {
-		// Logging before this point will go to the default stdout.
-		log.Fatalf("Failed to initialize backends: %v", err)
-	}
-
-	// Hijack the standard logger to send all logs to backends and stdout.
-	logging.New(backendManager)
-
-	// Initialize cache
-	if err := cache.Initialize(cfg.CacheSize); err != nil {
-		log.Fatalf("Failed to initialize cache: %v", err)
-	}
-
-	// Load cache from state
-	if err := cache.LoadFromState(); err != nil {
-		log.Printf("Warning: Failed to load cache from state: %v", err)
-	}
-
-	// Create pipeline stages
-	pipelineManager, err := pipeline.NewManager(cfg)
-	if err != nil {
-		log.Fatalf("Failed to initialize pipeline: %v", err)
-	}
-
-	// Start neighbor watcher
-	go network.WatchNeighbors()
-
-	// Start log file watcher
+	// Create a context for the application's lifecycle
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
-	if err := watcher.StartLogWatcher(ctx, cfg, pipelineManager, backendManager); err != nil {
-		log.Fatalf("Failed to start log watcher: %v", err)
-	}
-
-	// Start cache requery goroutine
-	go requery.StartRequeryLoop(cfg.RequeryInterval, pipelineManager.EnrichmentStages())
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
-	<-sigChan
-	log.Println("Shutting down gracefully...")
+	go func() {
+		<-sigChan
+		slog.Info("Shutting down gracefully...")
+		cancel() // Signal runApplication to stop
+	}()
 
-	// 1. Signal all background goroutines to stop.
-	cancel()
-
-	// 2. Persist all in-memory state to disk first.
-	// Sync cache to state before saving.
-	if err := cache.SaveToState(); err != nil {
-		log.Printf("Error syncing cache to state: %v", err)
+	if err := runApplication(ctx, cfg); err != nil {
+		slog.Error("Application failed", "error", err)
+		os.Exit(1)
 	}
+
+	slog.Info("Shutdown complete")
+}
+
+// runApplication contains the core logic of the log-enricher application.
+// It takes a context for graceful shutdown and the application configuration.
+func runApplication(ctx context.Context, cfg *config.Config) error {
+	// Initialize unified state
+	if err := state.Initialize(cfg.StateFilePath); err != nil {
+		return fmt.Errorf("failed to initialize state: %w", err)
+	}
+
+	// Initialize Backend
+	var backend backends.Backend
+	if cfg.Backend == "file" {
+		backend = backends.NewFileBackend(cfg.EnrichedFileSuffix)
+	} else if cfg.Backend == "loki" {
+		var err error
+		backend, err = backends.NewLokiBackend(cfg.LokiURL)
+
+		if err != nil {
+			return fmt.Errorf("failed to initialize Loki backend: %w", err)
+		}
+	} else {
+		return fmt.Errorf("backend %s not supported", cfg.Backend)
+	}
+
+	// Hijack the standard logger to send all logs to backends and stdout.
+	logging.New(cfg.LogLevel, filepath.Clean(cfg.LogBasePath+"/log-enricher/process.log"), backend)
+
+	// Create pipeline stages
+	pipelineManager, err := pipeline.NewManager(cfg, ctx)
+	if err != nil {
+		return fmt.Errorf("failed to initialize pipeline: %w", err)
+	}
+
+	// Create the log manager
+	manager, err := tailer.NewManagerImpl(cfg, pipelineManager, backend)
+
+	if err != nil {
+		return fmt.Errorf("failed to initialize log manager: %w", err)
+	}
+
+	if manager.StartWatching(ctx) != nil {
+		return fmt.Errorf("failed to start log watcher")
+	}
+
+	// Wait for the context to be cancelled (e.g., by signal handler or test)
+	<-ctx.Done()
+	slog.Info("Context cancelled, initiating shutdown sequence...")
 
 	// Save unified state (includes file metadata, positions, and cache).
 	if err := state.Save(cfg.StateFilePath); err != nil {
-		log.Printf("Error saving state: %v", err)
+		slog.Error("Error saving state", "error", err)
 	}
 
-	// 3. Shutdown backends (like logging) only after all other work is done.
-	backendManager.Shutdown()
+	// 2. Shutdown backends (like logging) only after all other work is done.
+	backend.Shutdown()
 
-	log.Println("Shutdown complete")
+	return nil
 }

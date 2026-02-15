@@ -1,9 +1,11 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
-	"log"
-	"log-enricher/internal/bufferpool"
+	"log-enricher/internal/models"
+	"log/slog"
+	"regexp"
 
 	"log-enricher/internal/config"
 )
@@ -13,96 +15,126 @@ import (
 // It returns true to keep the log, or false to drop it.
 type Stage interface {
 	Name() string
-	Process(line []byte, entry *bufferpool.LogEntry) (keep bool, err error)
+	Process(entry *models.LogEntry) (keep bool, err error)
+}
+
+type ProcessPipeline interface {
+	Process(entry *models.LogEntry) bool
 }
 
 type Manager interface {
-	Process(line []byte, entry *bufferpool.LogEntry) bool
-	EnrichmentStages() []EnrichmentStage
+	GetProcessPipeline(filePath string) ProcessPipeline
+}
+
+type appliedToStage struct {
+	stage     Stage
+	appliesTo *regexp.Regexp
 }
 
 // Manager holds and executes the configured processing stages.
 type manager struct {
-	stages []Stage
+	stages []appliedToStage
 }
 
 // NewManager creates a new pipeline manager from the application config.
-func NewManager(cfg *config.Config) (Manager, error) {
-	var stages []Stage
+func NewManager(cfg *config.Config, ctx context.Context) (Manager, error) {
+	var stages []appliedToStage
+
 	for i, stageCfg := range cfg.Stages {
-		stage, err := newStage(stageCfg)
+		stage, appliesTo, err := newStage(stageCfg, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("error creating stage %d (%s): %w", i, stageCfg.Type, err)
 		}
 		if stage != nil {
-			stages = append(stages, stage)
-			log.Printf("Enabled pipeline stage: %s", stage.Name())
+			stages = append(stages, appliedToStage{appliesTo: appliesTo, stage: stage})
+			slog.Debug("Enabled pipeline stage", "stage", stage.Name())
 		}
-	}
-
-	// Verify that the enrichment stage is preceded by the IP extraction stage.
-	var enrichmentStageFound, extractionStageFound bool
-	var enrichmentStageIndex, extractionStageIndex int
-	for i, s := range stages {
-		if _, ok := s.(*EnrichmentStage); ok {
-			enrichmentStageFound = true
-			enrichmentStageIndex = i
-		}
-		if _, ok := s.(*ClientIpExtractionStage); ok {
-			extractionStageFound = true
-			extractionStageIndex = i
-		}
-	}
-
-	if enrichmentStageFound && (!extractionStageFound || extractionStageIndex > enrichmentStageIndex) {
-		return nil, fmt.Errorf("enrichment stage requires a 'client_ip_extraction' stage to be configured before it in the pipeline")
 	}
 
 	return &manager{stages: stages}, nil
 }
 
+func (m *manager) GetProcessPipeline(filePath string) ProcessPipeline {
+	var stages []Stage
+	for _, stage := range m.stages {
+		if stage.appliesTo != nil {
+			if stage.appliesTo.MatchString(filePath) {
+				stages = append(stages, stage.stage)
+			} else {
+				slog.Debug("Ignoring stage due to 'applies_to' regex", "stage", stage.stage.Name(), "regex", stage.appliesTo, "path", filePath)
+			}
+		} else {
+			stages = append(stages, stage.stage)
+		}
+	}
+
+	return &processPipeline{stages: stages}
+}
+
+type processPipeline struct {
+	stages []Stage
+}
+
 // Process runs a log entry through the entire pipeline.
-func (m *manager) Process(line []byte, entry *bufferpool.LogEntry) bool {
+func (m *processPipeline) Process(entry *models.LogEntry) bool {
 	keep := true
 	var err error
 
 	for _, stage := range m.stages {
-		keep, err = stage.Process(line, entry)
+		keep, err = stage.Process(entry)
 		if err != nil {
-			log.Printf("Error during stage '%s': %v. Dropping log entry.", stage.Name(), err)
-			return false
+			slog.Error("Error during stage", "stage", stage.Name(), "error", err)
 		}
 		if !keep {
 			// Stage decided to drop the log, so we stop processing.
-			//log.Printf("Log dropped by stage: %s", stage.Name())
 			return false
 		}
 	}
 	return true
 }
 
-// EnrichmentStages returns the configured enrichment stages.
-func (m *manager) EnrichmentStages() []EnrichmentStage {
-	var stages []EnrichmentStage
-
-	for _, s := range m.stages {
-		if stage, ok := s.(*EnrichmentStage); ok {
-			stages = append(stages, *stage)
-		}
-	}
-	return stages
-}
-
 // newStage is a factory function to create stages from config.
-func newStage(stageCfg config.StageConfig) (Stage, error) {
+func newStage(stageCfg config.StageConfig, ctx context.Context) (Stage, *regexp.Regexp, error) {
+	var stage Stage
+	var err error
+
 	switch stageCfg.Type {
 	case "filter":
-		return NewFilterStage(stageCfg.Params)
-	case "enrichment":
-		return NewEnrichmentStage(stageCfg.Params)
+		stage, err = NewFilterStage(stageCfg.Params)
 	case "client_ip_extraction":
-		return NewClientIpExtractionStage(stageCfg.Params)
+		stage, err = NewClientIpExtractionStage(stageCfg.Params)
+	case "timestamp_extraction": // Added for completeness, though usually added automatically
+		stage, err = NewTimestampExtractionStage(stageCfg.Params)
+	case "hostname_enrichment":
+		stage, err = NewHostnameEnrichmentStage(ctx, stageCfg.Params)
+	case "geoip_enrichment":
+		stage, err = NewGeoIPStage(ctx, stageCfg.Params)
+	case "template_resolver":
+		stage, err = NewTemplateResolverStage(stageCfg.Params)
+	case "templated_enrichment":
+		stage, err = NewTemplatedEnrichmentStage(stageCfg.Params)
+	case "json_parser":
+		stage = NewJSONParser()
+	case "structured_parser":
+		stage, err = NewStructuredParser(stageCfg.Params)
 	default:
-		return nil, fmt.Errorf("unknown stage type: %s", stageCfg.Type)
+		return nil, nil, fmt.Errorf("unknown stage type: %s", stageCfg.Type)
 	}
+
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// If an AppliesTo regex is configured, wrap the stage with the filter.
+	if stageCfg.AppliesTo != "" {
+		regex, compileErr := regexp.Compile(stageCfg.AppliesTo)
+		if compileErr != nil || regex == nil {
+			return nil, nil, fmt.Errorf("invalid 'applies_to' regex for stage %s: %w", stageCfg.Type, compileErr)
+		}
+
+		slog.Debug("Applying 'AppliesTo' filter to stage", "stage", stage.Name(), "regex", stageCfg.AppliesTo)
+		return stage, regex, nil
+	}
+
+	return stage, nil, nil
 }

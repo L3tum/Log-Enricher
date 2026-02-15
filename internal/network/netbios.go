@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"log"
@@ -27,14 +28,16 @@ var netbiosQueryPacket = []byte{
 }
 
 // QueryNetBIOSName attempts to get the NetBIOS name from a Windows device
-func QueryNetBIOSName(ip string) string {
-	conn, err := net.DialTimeout("udp", fmt.Sprintf("%s:137", ip), 2*time.Second)
+func QueryNetBIOSName(parentCtx context.Context, ip string) string {
+	ctx, cancel := context.WithTimeout(parentCtx, 2*time.Second)
+	defer cancel()
+
+	dialer := net.Dialer{}
+	conn, err := dialer.DialContext(ctx, "udp", fmt.Sprintf("%s:137", ip))
 	if err != nil {
 		return ""
 	}
 	defer conn.Close()
-
-	conn.SetDeadline(time.Now().Add(2 * time.Second))
 
 	if _, err := conn.Write(netbiosQueryPacket); err != nil {
 		return ""

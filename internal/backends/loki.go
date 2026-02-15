@@ -1,14 +1,16 @@
 package backends
 
 import (
-	"bytes"
 	"fmt"
-	"log"
+	"log-enricher/internal/models"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/goccy/go-json"
 	"github.com/grafana/dskit/flagext"
 	"github.com/grafana/loki-client-go/loki"
 	"github.com/grafana/loki-client-go/pkg/urlutil"
@@ -38,23 +40,23 @@ func NewLokiBackend(lokiURL string) (*LokiBackend, error) {
 	// This prevents a race condition on startup where this service starts faster than Loki.
 	readyURL := *u
 	readyURL.Path = "/ready"
-	log.Printf("Waiting for Loki to be ready at %s...", readyURL.String())
+	slog.Debug("Waiting for Loki to be ready", "url", readyURL.String())
 	isConnected := false
 
 	httpClient := &http.Client{Timeout: 2 * time.Second}
-	for i := 0; i < 15; i++ { // Retry for ~30 seconds
+	for i := 0; i < 30; i++ { // Retry for ~60 seconds
 		resp, err := httpClient.Get(readyURL.String())
 		if err == nil && resp.StatusCode == http.StatusOK {
 			resp.Body.Close()
-			log.Println("Loki is ready.")
+			slog.Debug("Loki is ready.")
 			isConnected = true
 			break
 		}
 
 		if err != nil {
-			log.Printf("Loki readiness check failed: %v. Retrying...", err)
+			slog.Warn("Loki readiness check failed", "error", err, "retrying", true)
 		} else {
-			log.Printf("Loki readiness check failed with status: %s. Retrying...", resp.Status)
+			slog.Warn("Loki readiness check failed", "status", resp.Status, "retrying", true)
 			resp.Body.Close()
 		}
 		time.Sleep(2 * time.Second)
@@ -65,8 +67,9 @@ func NewLokiBackend(lokiURL string) (*LokiBackend, error) {
 	}
 
 	cfg := loki.Config{
-		URL:     urlutil.URLValue(flagext.URLValue{URL: u}),
-		Timeout: 5 * time.Second,
+		URL:       urlutil.URLValue(flagext.URLValue{URL: u}),
+		Timeout:   5 * time.Second,
+		BatchSize: 100,
 	}
 
 	client, err := loki.New(cfg)
@@ -74,44 +77,63 @@ func NewLokiBackend(lokiURL string) (*LokiBackend, error) {
 		return nil, fmt.Errorf("failed to create Loki client: %w", err)
 	}
 
-	log.Println("Loki backend enabled, sending logs to", lokiURL)
-	return &LokiBackend{client: client}, nil
+	slog.Info("Loki backend enabled, sending logs to", "url", lokiURL)
+
+	b := &LokiBackend{
+		client: client,
+	}
+	return b, nil
 }
 
 func (b *LokiBackend) Name() string {
 	return "loki"
 }
 
-// Send uses the pre-marshaled entry and sends it to Loki.
-func (b *LokiBackend) Send(sourcePath string, timestamp time.Time, entryAsBytes []byte) error {
-	// Use the sourcePath's filename as a label for better context in Loki.
-	appName := filepath.Base(filepath.Dir(sourcePath))
-	if appName == "." || appName == "/" || appName == "" {
+// Send now accepts a LogEntry struct directly.
+func (b *LokiBackend) Send(entry *models.LogEntry) error {
+	// Use the App field from the LogEntry for the 'app' label.
+	// Fallback to "log-enricher" if App is empty.
+	appName := strings.Clone(entry.App)
+	if appName == "" {
 		appName = "log-enricher"
 	}
+
 	labels := model.LabelSet{
 		"job":         "log-enricher",
-		"source_file": model.LabelValue(filepath.Base(sourcePath)),
+		"source_file": model.LabelValue(strings.Clone(filepath.Base(entry.SourcePath))),
 		"app":         model.LabelValue(appName),
 	}
 
-	// We have to copy the line over because otherwise Loki will wait sending it and the buffer will be returned to the pool
-	// before the line is sent.
-	// TODO: According to Go docs the string constructor should take a copy of the byte slice
-	// TODO: So this should be unnecessary, but it's not. Investigate.
-	copiedLine := bytes.Clone(entryAsBytes)
+	// Manually copy the timestamp struct.
+	// This creates an independent copy of the time.Time value.
+	timestampCopy := entry.Timestamp
 
-	// The Loki client handles batching and sending internally.
-	err := b.client.Handle(labels, timestamp, string(copiedLine))
-	if err != nil {
-		return err
+	// If there are no fields (no JSON) send the log line as the log message
+	if len(entry.Fields) == 0 {
+		return b.client.Handle(labels, timestampCopy, string(entry.LogLine))
 	}
-	return nil
+
+	// Marshal the Fields map to JSON for the log line content.
+	// This ensures all processed fields, including any added by pipeline stages, are sent.
+	entryAsBytes, err := json.MarshalWithOption(entry.Fields, json.UnorderedMap())
+	if err != nil {
+		slog.Error("Failed to marshal log entry fields to JSON", "error", err)
+		return fmt.Errorf("failed to marshal log entry fields to JSON: %w", err)
+	}
+
+	return b.client.Handle(labels, timestampCopy, string(entryAsBytes))
+}
+
+// CloseWriter is a no-op for LokiBackend as it doesn't manage per-file resources.
+func (b *LokiBackend) CloseWriter(sourcePath string) {
+	// No-op for LokiBackend
+	slog.Debug("CloseWriter called on LokiBackend (no-op)", "source_path", sourcePath)
 }
 
 // Shutdown stops the Loki client, which flushes any buffered entries.
 func (b *LokiBackend) Shutdown() {
 	if b.client != nil {
 		b.client.Stop()
+		slog.Info("Loki backend shut down.")
 	}
 }

@@ -1,180 +1,177 @@
 # Go Log Enricher
 
-This service automatically enriches log files with valuable metadata and forwards them to configured backends. It is designed to run as a sidecar or standalone service to add context to your logs with minimal configuration.
+`log-enricher` tails log files, runs each line through a configurable pipeline, and writes enriched output to a backend (`file` or `loki`).
 
-## Main Features
+The current architecture is:
+- Tailing and file discovery: `internal/tailer/*`
+- Line processing: `internal/processor/*`
+- Pipeline stages: `internal/pipeline/*`
+- Backend interface: `internal/backends/backend.go`
 
--   **Real-time Log Processing**: Monitors directories for log files and processes new lines as they are written.
--   **Stateful Processing**: Keeps track of processed file offsets and file identity (via inodes) to prevent data duplication across restarts and log rotations.
--   **High-Performance Caching**: Caches enrichment lookups (like DNS results) to reduce latency and redundant external queries.
--   **Multi-Stage Enrichment**: Each stage can be enabled or disabled independently.
-    -   **Hostname Resolution**: Enriches logs by resolving IP addresses to hostnames.
-    -   **GeoIP Lookup**: Adds geographical data for IP addresses using a local MaxMind database.
-    -   **CrowdSec Intelligence**: Checks IPs against the CrowdSec Threat Intelligence database.
--   **Flexible Backends**: Forwards enriched logs to multiple destinations. Currently supports:
-    -   **File**: Saves enriched logs to a new file with a `.enriched` suffix.
-    -   **Loki**: Sends logs directly to a Grafana Loki instance via HTTP.
+## Features
 
-## Performance and Efficiency
-
-The service is engineered for high throughput and minimal resource consumption, making it suitable for high-volume logging environments. This is achieved through several zero-allocation and resource pooling strategies to minimize garbage collector (GC) pressure.
-
--   **Zero-Allocation Log Tailing**: Log lines are read from disk directly into pooled buffers (`sync.Pool`), eliminating memory allocations in the I/O hot path.
--   **Log Entry Pooling**: Parsed log entries (`map[string]interface{}`) are reused from a shared pool, drastically reducing the number of small allocations that would otherwise churn the GC.
--   **Marshal-Once Broadcasting**: Enriched logs are converted to JSON a single time into a pooled buffer. This single, pre-marshaled byte slice is then sent to all configured backends, avoiding redundant work and allocations.
--   **Efficient Network I/O**: A shared, keep-alive enabled HTTP client is used for all external enrichment lookups, and streaming decoders are used where possible to minimize memory usage when parsing API responses.
-
-### Hostname Resolution Explained
-
-The service uses a multi-layered approach to resolve IP addresses to hostnames, maximizing the chances of a successful lookup, especially in local network environments. Each method can be enabled or disabled individually.
-
--   **rDNS**: Performs standard reverse DNS lookups against a configured public or private DNS server.
--   **mDNS**: Uses multicast DNS for zero-configuration name resolution of `.local` domains, common with Apple devices and Linux systems running Avahi.
--   **LLMNR**: Leverages Link-Local Multicast Name Resolution, a protocol used by modern Windows systems for local name resolution when DNS fails.
--   **NetBIOS**: Queries for NetBIOS names, which is useful for identifying legacy Windows devices or systems on a local network.
+- Real-time recursive log directory watching via `fsnotify`
+- Stateful resume across restarts with inode/size/modtime checks
+- Stage-based processing pipeline (`STAGE_<N>_*` env config)
+- Structured and JSON parsing stages
+- Enrichment stages for client IP, hostname, and GeoIP
+- Output to local enriched files or Grafana Loki
 
 ## Quick Start
 
-```sh
+### File backend
+
+```bash
 docker run -d \
   --name log-enricher \
-  -e "BACKENDS=file,loki" \
-  -e "LOKI_URL=http://your-loki-instance:3100" \
-  -v /path/to/your/logs:/logs \
-  -v /path/to/app/cache:/cache \
+  -e "BACKEND=file" \
+  -e "LOG_BASE_PATH=/logs" \
+  -e "LOG_FILE_EXTENSIONS=.log" \
+  -e "ENRICHED_FILE_SUFFIX=.enriched" \
+  -v /path/to/logs:/logs \
+  -v /path/to/cache:/cache \
   ghcr.io/l3tum/log-enricher
- ```
+```
 
-## Configuration
+### Loki backend
 
-Configuration is managed exclusively through environment variables. The service does not accept command-line flags.
-
-|  Environment Variable        | Default Value | Description |
-|------------------------------| --- | --- |
-| CACHE_SIZE                   | 10000 | Number of enrichment results to keep in the cache. |
-| STATE_FILE_PATH              | /cache/state.json | Path to the file for persisting processor state. |
-| REQUERY_INTERVAL             | 5m | How often to re-query a cached entry. |
-| LOG_BASE_PATH                | /logs | The base directory where log files are monitored. |
-| LOG_FILE_EXTENSIONS          | .log | Comma-separated list of file extensions to monitor. |
-| PLAINTEXT_PROCESSING_ENABLED | true | Enables processing of non-JSON log lines. |
-| BACKENDS                     | file | Comma-separated list of enabled backends (e.g., file,loki). |
-| LOKI_URL                     | "" | The HTTP URL for the Loki backend (e.g., http://loki:3100). |
-| ENRICHED_FILE_SUFFIX         | .enriched | Suffix for log files saved by the 'file' backend. |
-
-### Pipeline Configuration
-The log processing pipeline is defined by a sequence of stages, configured via environment variables. Stages are defined by STAGE_<N>_* variables, where <N> is the index of the stage, starting from 0. They are executed in ascending order.
-
-STAGE_N_TYPE: Defines the type of the stage (e.g., client_ip_extraction, enrichment, filter).
-
-STAGE_N_PARAMETER: Sets a parameter for that specific stage. Parameter names are case-insensitive.
-
-### Stage: client_ip_extraction
-This stage finds a client IP address in a JSON log entry and adds it to the client_ip field. This is required for the enrichment stage to work.
-
-| Parameter | Description | Example |
-| --- | --- | --- |
-| client_ip_fields | Comma-separated list of fields to check for an IP address, in order of priority. | client_ip,remote_addr,x_forwarded_for |
-| regex_enabled | If true, falls back to searching for an IP in the msg field or the raw log line if no IP is found in the specified fields. | true |
-
-**Example**
-
-````bash
-# STAGE 0: Find the client IP
-STAGE_0_TYPE=client_ip_extraction
-STAGE_0_CLIENT_IP_FIELDS=remote_addr,x-forwarded-for
-STAGE_0_REGEX_ENABLED=true
-````
-
-### Stage: enrichment
-This stage enriches the log entry with data based on the extracted client_ip. It can perform hostname resolution, GeoIP lookups, and CrowdSec threat intelligence checks.
-
-| Parameter | Description | Example |
-| --- | --- | --- |
-| enable_hostname | Set to true to enable hostname resolution. | true |
-| enable_geoip | Set to true to enable GeoIP lookups. | true |
-| enable_crowdsec | Set to true to enable CrowdSec CAPI lookups. | false |
-| hostname_dns_server | DNS server for rDNS lookups. | 1.1.1.1:53 |
-| hostname_enable_rdns | Enables standard reverse DNS lookups. | true |
-| hostname_enable_mdns | Enables mDNS lookups. | true |
-| hostname_enable_llmnr | Enables LLMNR lookups. | true |
-| hostname_enable_netbios | Enables NetBIOS lookups. | true |
-| geoip_database_path | Path to the MaxMind GeoIP database file. | /geoip/GeoLite2-City.mmdb |
-| crowdsec_lapi_url | URL for the CrowdSec LAPI. | http://crowdsec:8080 |
-| crowdsec_lapi_key | API Key for the CrowdSec LAPI. | yoursupersecretkey |
-| max_age | Maximum age of a log in seconds. Logs older than this will be dropped. | 3600 |
-
-**Example**
-
-````bash
-# STAGE 1: Enrich the log with GeoIP and Hostname data
-STAGE_1_TYPE=enrichment
-STAGE_1_ENABLE_GEOIP=true
-STAGE_1_GEOIP_DATABASE_PATH=/geoip/GeoLite2-City.mmdb
-STAGE_1_ENABLE_HOSTNAME=true
-STAGE_1_HOSTNAME_DNS_SERVER=8.8.8.8:53
-````
-
-### Stage: filter
-This stage filters out log entries based on a set of criteria.
-
-| Parameter | Description | Example |
-| --- | --- | --- |
-| action | drop (default) or keep. The action to take if the rules match. | drop |
-| match | any (default) or all. Whether any rule or all rules must match. | any |
-| regex | A regex pattern to match against the raw log line. | (?i)health check |
-| json_field | A field to check in a JSON log. | http_status |
-| json_value | A regex to match against the value of json_field. | ^5.. |
-| min_size | Minimum line size in characters to keep the log. | 10 |
-| max_size | Maximum line size in characters to keep the log. | 4096 |
-
-**Example**
-
-````bash
-# STAGE 2: Filter out noisy logs
-STAGE_2_TYPE=filter
-STAGE_2_ACTION=drop
-STAGE_2_MATCH=any
-STAGE_2_REGEX=(?i)bot
-STAGE_2_JSON_FIELD=user_agent
-STAGE_2_JSON_VALUE=HealthChecker
-# Drop logs older than 1 hour
-STAGE_2_MAX_AGE=3600
-````
-
-**Full Pipeline Example**
-
-````bash
+```bash
 docker run -d \
   --name log-enricher \
-  -e "BACKENDS=loki" \
+  -e "BACKEND=loki" \
   -e "LOKI_URL=http://loki:3100" \
-  \
-  # Stage 0: Extract the client IP from one of these fields
-  -e "STAGE_0_TYPE=client_ip_extraction" \
-  -e "STAGE_0_CLIENT_IP_FIELDS=ip,client_ip,remote_addr" \
-  \
-  # Stage 1: Enrich with GeoIP and Hostname
-  -e "STAGE_1_TYPE=enrichment" \
-  -e "STAGE_1_ENABLE_GEOIP=true" \
-  -e "STAGE_1_GEOIP_DATABASE_PATH=/geoip/GeoLite2-City.mmdb" \
-  -e "STAGE_1_ENABLE_HOSTNAME=true" \
-  \
-  # Stage 2: Drop logs from internal IPs
-  -e "STAGE_2_TYPE=filter" \
-  -e "STAGE_2_ACTION=drop" \
-  -e "STAGE_2_JSON_FIELD=client_ip" \
-  -e "STAGE_2_JSON_VALUE=^192\\.168\\." \
-  \
-  -v /path/to/your/logs:/logs \
-  -v /path/to/app/cache:/cache \
-  -v /path/to/geoip.mmdb:/geoip/GeoLite2-City.mmdb \
+  -e "LOG_BASE_PATH=/logs" \
+  -v /path/to/logs:/logs \
+  -v /path/to/cache:/cache \
   ghcr.io/l3tum/log-enricher
-````
+```
 
-## Contributing
+## Environment Variables
 
-This is a personal hobby project built primarily for my own needs. While I appreciate community interest and ideas, please understand that I may not be able to address all feature requests or issues immediately.
+| Variable | Default | Description |
+| --- | --- | --- |
+| `STATE_FILE_PATH` | `/cache/state.json` | Persistent state file path |
+| `LOG_BASE_PATH` | `/logs` | Root directory to watch recursively |
+| `LOG_FILE_EXTENSIONS` | `.log` | Comma-separated file suffixes to process |
+| `LOG_FILES_IGNORED` | `` | Regex for files to ignore |
+| `BACKEND` | `file` | Output backend: `file` or `loki` |
+| `LOKI_URL` | `` | Loki endpoint (required for `BACKEND=loki`) |
+| `ENRICHED_FILE_SUFFIX` | `.enriched` | Suffix used by file backend |
+| `APP_NAME` | `` | Static app label for output |
+| `APP_IDENTIFICATION_REGEX` | `` | Regex with named group `app` to derive app from file path |
+| `LOG_LEVEL` | `INFO` | Global log level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
 
+## Pipeline Configuration
 
-If you have an idea or find a bug, feel free to open an issue to start a discussion.
+Stages are configured in ascending order:
+- `STAGE_0_TYPE=...`
+- `STAGE_1_TYPE=...`
+- ...
 
+Optional stage scoping:
+- `STAGE_<N>_APPLIES_TO=<regex>`
+
+Stage parameters:
+- `STAGE_<N>_<PARAM>=...`
+
+Examples:
+- `STAGE_0_TYPE=client_ip_extraction`
+- `STAGE_0_CLIENT_IP_FIELDS=remote_addr,x-forwarded-for`
+- `STAGE_1_TYPE=geoip_enrichment`
+- `STAGE_1_GEOIP_DATABASE_PATH=/geoip/GeoLite2-City.mmdb`
+
+## Available Stage Types
+
+### `json_parser`
+Parses `logEntry.LogLine` as JSON into fields. No required params.
+
+### `structured_parser`
+Parses key/value text logs with regex.
+- `pattern` (optional): regex with named groups, or exactly 2 unnamed groups for key/value
+
+### `client_ip_extraction`
+Extracts client IP from configured fields.
+- `client_ip_fields` (required): comma-separated candidate field names
+- `target_field` (optional, default `client_ip`)
+
+### `timestamp_extraction`
+Parses timestamps from configured fields.
+- `timestamp_fields` (optional): comma-separated field names (defaults are included)
+- `custom_layouts` (optional): comma-separated Go time layouts
+
+### `filter`
+Drops/keeps logs based on matching rules.
+- `action` (`drop` or `keep`, default `drop`)
+- `match` (`any` or `all`, default `any`)
+- `regex`
+- `json_field`
+- `json_value`
+- `min_size`
+- `max_size`
+- `max_age` (seconds)
+
+### `hostname_enrichment`
+Hostname enrichment from IP using multiple discovery methods.
+- `client_ip_field` (default `client_ip`)
+- `client_hostname_field` (default `client_hostname`)
+- `dns_server`
+- `enable_rdns`
+- `enable_mdns`
+- `enable_llmnr`
+- `enable_netbios`
+
+### `geoip_enrichment`
+Adds country from MaxMind database.
+- `geoip_database_path` (required for stage activation)
+- `client_ip_field` (default `client_ip`)
+- `client_country_field` (default `client_country`)
+
+### `template_resolver`
+Renders template strings using values from entry fields.
+- `template_field` (required)
+- `values_prefix` (required)
+- `output_field` (optional, defaults to `<template_field>_rendered`)
+- `placeholder` (optional regex for non-Go-template placeholders)
+
+### `templated_enrichment`
+Computes a field from a Go template over existing fields.
+- `template` (required)
+- `field` (required)
+
+## Example Pipeline
+
+```bash
+STAGE_0_TYPE=json_parser
+
+STAGE_1_TYPE=client_ip_extraction
+STAGE_1_CLIENT_IP_FIELDS=client_ip,remote_addr,x-forwarded-for
+STAGE_1_TARGET_FIELD=client_ip
+
+STAGE_2_TYPE=timestamp_extraction
+STAGE_2_TIMESTAMP_FIELDS=time,timestamp,@timestamp
+
+STAGE_3_TYPE=hostname_enrichment
+STAGE_3_CLIENT_IP_FIELD=client_ip
+STAGE_3_CLIENT_HOSTNAME_FIELD=client_hostname
+STAGE_3_ENABLE_RDNS=true
+
+STAGE_4_TYPE=geoip_enrichment
+STAGE_4_GEOIP_DATABASE_PATH=/geoip/GeoLite2-City.mmdb
+STAGE_4_CLIENT_IP_FIELD=client_ip
+STAGE_4_CLIENT_COUNTRY_FIELD=client_country
+
+STAGE_5_TYPE=filter
+STAGE_5_ACTION=drop
+STAGE_5_MATCH=any
+STAGE_5_REGEX=(?i)healthcheck
+```
+
+## Development Checks
+
+Before merging changes:
+
+```bash
+go test ./...
+go test -race ./...
+go test -count=1 ./...
+```

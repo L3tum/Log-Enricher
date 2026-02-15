@@ -9,40 +9,43 @@ import (
 )
 
 type Config struct {
-	CacheSize                  int
-	StateFilePath              string
-	RequeryInterval            time.Duration
-	LogBasePath                string
-	LogFileExtensions          []string
-	PlaintextProcessingEnabled bool
-	ParseTimestampEnabled      bool
-	TimestampFields            []string
-	Backends                   []string
-	LokiURL                    string
-	EnrichedFileSuffix         string
-	Stages                     []StageConfig
+	StateFilePath               string
+	LogBasePath                 string
+	LogFileExtensions           []string
+	LogFilesIgnored             string
+	ParseTimestampEnabled       bool
+	TimestampFields             []string
+	Backend                     string
+	LokiURL                     string
+	EnrichedFileSuffix          string
+	AppName                     string
+	AppIdentificationRegex      string
+	LogLevel                    string
+	StructuredLogParsingEnabled bool
+	StructuredLogRegex          string
+	Stages                      []StageConfig
 }
 
 // StageConfig holds the configuration for a single pipeline stage.
 type StageConfig struct {
-	Type   string
-	Params map[string]interface{}
+	Type      string
+	AppliesTo string
+	Params    map[string]interface{}
 }
 
 func Load() *Config {
 	cfg := &Config{
-		CacheSize:                  getEnvInt("CACHE_SIZE", 10000),
-		StateFilePath:              getEnv("STATE_FILE_PATH", "/cache/state.json"),
-		RequeryInterval:            getEnvDuration("REQUERY_INTERVAL", 5*time.Minute),
-		LogBasePath:                getEnv("LOG_BASE_PATH", "/logs"),
-		PlaintextProcessingEnabled: getEnvBool("PLAINTEXT_PROCESSING_ENABLED", false),
-		ParseTimestampEnabled:      getEnvBool("PARSE_TIMESTAMP_ENABLED", true),
-		TimestampFields:            getEnvSlice("TIMESTAMP_FIELDS", []string{"time", "timestamp", "Timestamp", "ts", "date", "created_at", "CreatedAt", "starttime", "StartTime"}),
-		LogFileExtensions:          getEnvSlice("LOG_FILE_EXTENSIONS", []string{".log"}),
-		Backends:                   getEnvSlice("BACKENDS", []string{"file"}),
-		LokiURL:                    getEnv("LOKI_URL", ""),
-		EnrichedFileSuffix:         getEnv("ENRICHED_FILE_SUFFIX", ".enriched"),
-		Stages:                     loadStages(),
+		StateFilePath:          getEnv("STATE_FILE_PATH", "/cache/state.json"),
+		LogBasePath:            getEnv("LOG_BASE_PATH", "/logs"),
+		LogFilesIgnored:        getEnv("LOG_FILES_IGNORED", ""),
+		LogFileExtensions:      getEnvSlice("LOG_FILE_EXTENSIONS", []string{".log"}),
+		Backend:                getEnv("BACKEND", "file"),
+		LokiURL:                getEnv("LOKI_URL", ""),
+		EnrichedFileSuffix:     getEnv("ENRICHED_FILE_SUFFIX", ".enriched"),
+		AppName:                getEnv("APP_NAME", ""),
+		AppIdentificationRegex: getEnv("APP_IDENTIFICATION_REGEX", ""),
+		LogLevel:               getEnv("LOG_LEVEL", "INFO"),
+		Stages:                 loadStages(),
 	}
 
 	return cfg
@@ -63,13 +66,18 @@ func loadStages() []StageConfig {
 			Params: make(map[string]interface{}),
 		}
 
+		// Check for AppliesTo specifically
+		appliesToKey := fmt.Sprintf("STAGE_%d_APPLIES_TO", i)
+		stage.AppliesTo = getEnv(appliesToKey, "")
+
 		// Find all STAGE_i_* variables and add them to the stage's params.
 		prefix := fmt.Sprintf("STAGE_%d_", i)
 		for _, e := range os.Environ() {
 			if strings.HasPrefix(e, prefix) {
 				parts := strings.SplitN(e, "=", 2)
 				key := strings.ToLower(strings.TrimPrefix(parts[0], prefix))
-				if key != "type" {
+				// Only add to params if it's not 'type' or 'appliesto'
+				if key != "type" && key != "appliesto" {
 					stage.Params[key] = parts[1]
 				}
 			}

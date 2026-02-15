@@ -2,10 +2,13 @@ package backends
 
 import (
 	"fmt"
+	"log-enricher/internal/models"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
-	"time"
+
+	"github.com/goccy/go-json"
 )
 
 // FileBackend writes enriched logs to separate files based on the original log's path.
@@ -28,14 +31,39 @@ func (b *FileBackend) Name() string {
 
 // Send writes the pre-marshaled entry to a corresponding .enriched file.
 // The incoming byte slice already contains a newline.
-func (b *FileBackend) Send(sourcePath string, timestamp time.Time, entryAsBytes []byte) error {
-	writer, err := b.getWriter(sourcePath)
+func (b *FileBackend) Send(entry *models.LogEntry) error {
+	writer, err := b.getWriter(entry.SourcePath)
 	if err != nil {
 		return err
 	}
 
-	_, err = writer.Write(entryAsBytes)
-	_, err = writer.Write([]byte("\n"))
+	// If there are no fields (no JSON) send the log line as the log message
+	if len(entry.Fields) == 0 {
+		if len(entry.LogLine) == 0 {
+			_, err = writer.Write([]byte{'\n'})
+			return err
+		}
+		_, err = writer.Write(entry.LogLine)
+		if err != nil {
+			return err
+		}
+		if entry.LogLine[len(entry.LogLine)-1] != '\n' {
+			_, err = writer.Write([]byte{'\n'})
+		}
+		return err
+	}
+
+	// Use json.MarshalNoEscape with json.Unordered() to prevent key sorting.
+	buf, err := json.MarshalWithOption(entry.Fields, json.UnorderedMap())
+
+	if err != nil {
+		return err
+	}
+
+	// Add a newline character after each JSON log entry for readability in the file.
+	buf = append(buf, '\n')
+
+	_, err = writer.Write(buf)
 	return err
 }
 
@@ -77,14 +105,29 @@ func (b *FileBackend) createWriter(sourcePath string) (*os.File, error) {
 	return f, nil
 }
 
+// CloseWriter closes the file writer for a specific sourcePath and removes it from the map.
+func (b *FileBackend) CloseWriter(sourcePath string) {
+	if writer, loaded := b.writers.LoadAndDelete(sourcePath); loaded {
+		if file, ok := writer.(*os.File); ok {
+			slog.Info("Closing enriched log file", "path", sourcePath+b.suffix)
+			if err := file.Close(); err != nil {
+				slog.Error("Failed to close enriched log file", "path", sourcePath+b.suffix, "error", err)
+			}
+		}
+	}
+}
+
 // Shutdown closes all open file writers managed by the backend.
 func (b *FileBackend) Shutdown() {
 	// Iterate over the sync.Map and close each writer.
 	b.writers.Range(func(key, value interface{}) bool {
 		if writer, ok := value.(*os.File); ok {
-			_ = writer.Close()
+			slog.Info("Closing enriched log file during shutdown", "path", key.(string)+b.suffix)
+			if err := writer.Close(); err != nil {
+				slog.Error("Failed to close enriched log file during shutdown", "path", key.(string)+b.suffix, "error", err)
+			}
 		}
-		// The map does not need to be cleared, as the instance will be discarded.
+		// The map does not need to be cleared explicitly, as the instance will be discarded.
 		return true
 	})
 }

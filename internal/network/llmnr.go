@@ -28,8 +28,8 @@ var llmnrResolver = &net.Resolver{
 }
 
 // QueryLLMNR attempts to resolve hostname via LLMNR (Link-Local Multicast Name Resolution)
-func QueryLLMNR(ip string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func QueryLLMNR(parentCtx context.Context, ip string) string {
+	ctx, cancel := context.WithTimeout(parentCtx, 2*time.Second)
 	defer cancel()
 
 	names, err := llmnrResolver.LookupAddr(ctx, ip)

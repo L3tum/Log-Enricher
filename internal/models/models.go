@@ -1,5 +1,15 @@
 package models
 
+import "time"
+
+type LogEntry struct {
+	Fields     map[string]interface{}
+	LogLine    []byte
+	Timestamp  time.Time
+	SourcePath string
+	App        string
+}
+
 type DeviceInfo struct {
 	Hostname string              `json:"hostname"`
 	IPv4s    map[string]struct{} `json:"ipv4s"`
@@ -27,7 +37,6 @@ type CrowdsecInfo struct {
 }
 
 type Result struct {
-	Found    bool
 	Hostname string
 	MAC      string
 	Geo      *GeoInfo

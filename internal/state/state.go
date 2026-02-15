@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -35,9 +36,10 @@ func (f *FileState) GetLineNumber() int64 {
 
 // AppState holds all persistent state for the application
 type AppState struct {
-	Files map[string]*FileState    `json:"files"`
-	Cache map[string]models.Result `json:"cache"`
-	mu    sync.RWMutex
+	Files  map[string]*FileState     `json:"files"`
+	Caches map[string]map[string]any `json:"caches"`
+	Cache  map[string]models.Result  `json:"cache"`
+	mu     sync.RWMutex
 }
 
 var globalState *AppState
@@ -49,8 +51,9 @@ func Initialize(stateFilePath string) error {
 	}
 
 	globalState = &AppState{
-		Files: make(map[string]*FileState),
-		Cache: make(map[string]models.Result),
+		Files:  make(map[string]*FileState),
+		Caches: make(map[string]map[string]any),
+		Cache:  make(map[string]models.Result),
 	}
 
 	return Load(stateFilePath)
@@ -70,28 +73,11 @@ func Load(path string) error {
 	globalState.mu.Lock()
 	defer globalState.mu.Unlock()
 
-	var tempState struct {
-		Files map[string]*FileState    `json:"files"`
-		Cache map[string]models.Result `json:"cache"`
-	}
-
-	if err := json.Unmarshal(data, &tempState); err != nil {
-		// Attempt to handle old state format gracefully
-		if err := json.Unmarshal(data, &globalState); err == nil {
-			log.Println("Warning: Loaded state from a potentially old format. Consider resetting state if issues occur.")
-			return nil
-		}
+	if err := json.Unmarshal(data, &globalState); err != nil {
 		return fmt.Errorf("failed to unmarshal state: %w", err)
 	}
 
-	if tempState.Files != nil {
-		globalState.Files = tempState.Files
-	}
-	if tempState.Cache != nil {
-		globalState.Cache = tempState.Cache
-	}
-
-	log.Printf("Loaded state: %d files, %d cache entries", len(globalState.Files), len(globalState.Cache))
+	slog.Info("Loaded state", "files", len(globalState.Files), "cacheEntries", len(globalState.Cache))
 	return nil
 }
 
@@ -121,7 +107,7 @@ func Save(path string) error {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
-	log.Printf("Saved state: %d files, %d cache entries", len(globalState.Files), len(globalState.Cache))
+	slog.Info("Saved state", "files", len(globalState.Files), "cacheEntries", len(globalState.Cache))
 	return nil
 }
 
@@ -152,7 +138,7 @@ func UpdateAllFileMetadata() {
 		fileState.mu.Lock()
 		info, err := os.Stat(path)
 		if err != nil {
-			log.Printf("Could not stat file %s for metadata update: %v", path, err)
+			slog.Error("Could not stat file for metadata update", "path", path, "error", err)
 			fileState.mu.Unlock()
 			delete(globalState.Files, path)
 			continue
@@ -173,25 +159,33 @@ func FindMatchingPosition(path string, storedState *FileState) (int64, bool) {
 	defer storedState.mu.RUnlock()
 	info, err := os.Stat(path)
 	if err != nil {
-		log.Printf("Error stating file for position matching %s: %v. Starting from beginning.", path, err)
+		slog.Error("Error stating file for position matching. Starting from beginning.", "path", path, "error", err)
 		return 0, false
 	}
 
 	// Primary check: Inode. If it doesn't match, it's a different file.
 	currentInode, inodeSupported := getInode(info)
 	if inodeSupported && storedState.Inode != 0 && currentInode != storedState.Inode {
-		log.Printf("File %s has been rotated (inode mismatch: stored %d, current %d). Starting from beginning.", path, storedState.Inode, currentInode)
+		slog.Info("File has been rotated (inode mismatch). Starting from beginning.", "path", path, "stored", storedState.Inode, "current", currentInode)
 		return 0, false
 	}
 
 	// If inodes match, we only need to check for truncation.
 	if inodeSupported && storedState.Inode != 0 && currentInode == storedState.Inode {
 		if info.Size() < storedState.FileSize {
-			log.Printf("File %s was truncated (same inode, size is smaller). Starting from beginning.", path)
+			slog.Info("File was truncated (same inode, size is smaller). Starting from beginning.", "path", path)
 			return 0, false
 		}
-		// Inodes match and not truncated, we can resume.
-		log.Printf("File %s appears the same based on inode. Resuming from line %d.", path, storedState.LineNumber)
+
+		// If size is unchanged but modification time changed, we cannot safely
+		// assume this is the same logical file (inode reuse after rotation can
+		// happen on some filesystems). Be conservative and restart.
+		if storedState.FileSize > 0 && info.Size() == storedState.FileSize &&
+			storedState.LastModified > 0 && info.ModTime().Unix() != storedState.LastModified {
+			slog.Info("File metadata changed with same size/inode. Starting from beginning.", "path", path)
+			return 0, false
+		}
+
 		return storedState.LineNumber, true
 	}
 
@@ -201,15 +195,27 @@ func FindMatchingPosition(path string, storedState *FileState) (int64, bool) {
 		return 0, false // No prior state to compare against.
 	}
 	if info.Size() == storedState.FileSize && info.ModTime().Unix() == storedState.LastModified {
-		log.Printf("File %s appears unchanged based on stored metadata. Resuming from line %d.", path, storedState.LineNumber)
 		return storedState.LineNumber, true
 	}
 
-	log.Printf("File %s has changed. Starting from beginning.", path)
+	slog.Info("File has changed. Starting from beginning.", "path", path)
 	return 0, false
 }
 
 // --- Cache Functions ---
+
+func GetCacheEntries(name string) (map[string]any, bool) {
+	globalState.mu.RLock()
+	defer globalState.mu.RUnlock()
+	result, ok := globalState.Caches[name]
+	return result, ok
+}
+
+func SetCacheEntries(name string, entries map[string]any) {
+	globalState.mu.Lock()
+	defer globalState.mu.Unlock()
+	globalState.Caches[name] = entries
+}
 
 func GetCacheEntry(ip string) (models.Result, bool) {
 	result, ok := globalState.Cache[ip]

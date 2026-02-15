@@ -3,7 +3,7 @@ package network
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"time"
@@ -29,15 +29,15 @@ var mdnsResolver = &net.Resolver{
 }
 
 // QueryMDNS attempts to resolve hostname via mDNS (multicast DNS)
-func QueryMDNS(ip string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+func QueryMDNS(parentCtx context.Context, ip string) string {
+	ctx, cancel := context.WithTimeout(parentCtx, 2*time.Second)
 	defer cancel()
 
 	names, err := mdnsResolver.LookupAddr(ctx, ip)
 	if err == nil && len(names) > 0 {
 		hostname := strings.TrimSuffix(names[0], ".local.")
 		hostname = strings.TrimSuffix(hostname, ".")
-		log.Printf("mDNS lookup success: %s -> %s", ip, hostname)
+		slog.Info("mDNS lookup success", "ip", ip, "hostname", hostname)
 		return hostname
 	}
 

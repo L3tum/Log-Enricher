@@ -3,7 +3,6 @@ package config
 import (
 	"reflect"
 	"testing"
-	"time"
 )
 
 // Step 1: This test function, TestLoadConfig, verifies the loading of basic configuration values.
@@ -12,17 +11,8 @@ func TestLoadConfig(t *testing.T) {
 	t.Run("loads default values correctly", func(t *testing.T) {
 		cfg := Load()
 
-		if cfg.CacheSize != 10000 {
-			t.Errorf("expected default CacheSize to be 10000, got %d", cfg.CacheSize)
-		}
 		if cfg.StateFilePath != "/cache/state.json" {
 			t.Errorf("expected default StateFilePath to be '/cache/state.json', got %s", cfg.StateFilePath)
-		}
-		if cfg.RequeryInterval != 5*time.Minute {
-			t.Errorf("expected default RequeryInterval to be 5m, got %v", cfg.RequeryInterval)
-		}
-		if cfg.PlaintextProcessingEnabled != false {
-			t.Errorf("expected default PlaintextProcessingEnabled to be false, got %v", cfg.PlaintextProcessingEnabled)
 		}
 		if cfg.LokiURL != "" {
 			t.Errorf("expected default LokiURL to be empty, got %s", cfg.LokiURL)
@@ -36,21 +26,12 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("PLAINTEXT_PROCESSING_ENABLED", "false")
 		t.Setenv("LOKI_URL", "http://loki:3100")
 		t.Setenv("LOG_FILE_EXTENSIONS", ".log,.txt")
-		t.Setenv("BACKENDS", "loki,file")
+		t.Setenv("BACKEND", "loki")
 
 		cfg := Load()
 
-		if cfg.CacheSize != 500 {
-			t.Errorf("expected overridden CacheSize to be 500, got %d", cfg.CacheSize)
-		}
 		if cfg.StateFilePath != "/test/state.json" {
 			t.Errorf("expected overridden StateFilePath to be '/test/state.json', got %s", cfg.StateFilePath)
-		}
-		if cfg.RequeryInterval != 10*time.Second {
-			t.Errorf("expected overridden RequeryInterval to be 10s, got %v", cfg.RequeryInterval)
-		}
-		if cfg.PlaintextProcessingEnabled != false {
-			t.Errorf("expected overridden PlaintextProcessingEnabled to be false, got %v", cfg.PlaintextProcessingEnabled)
 		}
 		if cfg.LokiURL != "http://loki:3100" {
 			t.Errorf("expected overridden LokiURL to be 'http://loki:3100', got %s", cfg.LokiURL)
@@ -61,9 +42,8 @@ func TestLoadConfig(t *testing.T) {
 			t.Errorf("expected overridden LogFileExtensions to be %v, got %v", expectedExtensions, cfg.LogFileExtensions)
 		}
 
-		expectedBackends := []string{"loki", "file"}
-		if !reflect.DeepEqual(cfg.Backends, expectedBackends) {
-			t.Errorf("expected overridden Backends to be %v, got %v", expectedBackends, cfg.Backends)
+		if !reflect.DeepEqual(cfg.Backend, "loki") {
+			t.Errorf("expected overridden Backends to be %v, got %v", "loki", cfg.Backend)
 		}
 	})
 }

@@ -1,6 +1,7 @@
 package tailer
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,17 +49,18 @@ func TestTailer(t *testing.T) {
 		appender("line 1\nline 2\n")
 
 		// Start tailing from the beginning
-		tailer := NewTailer(logFilePath, 0, io.SeekStart)
+		ctx := context.Background()
+		tailer := NewTailer(ctx, logFilePath, 0, io.SeekStart)
 		tailer.Start()
 		defer tailer.Stop()
 
 		// Assert initial lines
-		assert.Equal(t, "line 1", (<-tailer.Lines).Buffer.String())
-		assert.Equal(t, "line 2", (<-tailer.Lines).Buffer.String())
+		assert.Equal(t, "line 1", string((<-tailer.Lines).Buffer))
+		assert.Equal(t, "line 2", string((<-tailer.Lines).Buffer))
 
 		// Append a new line
 		appender("line 3\n")
-		assert.Equal(t, "line 3", (<-tailer.Lines).Buffer.String())
+		assert.Equal(t, "line 3", string((<-tailer.Lines).Buffer))
 	})
 
 	t.Run("Handles file truncation", func(t *testing.T) {
@@ -67,7 +69,8 @@ func TestTailer(t *testing.T) {
 
 		appender("line 1\nline 2\n")
 
-		tailer := NewTailer(logFilePath, 0, io.SeekStart)
+		ctx := context.Background()
+		tailer := NewTailer(ctx, logFilePath, 0, io.SeekStart)
 		tailer.Start()
 		defer tailer.Stop()
 
@@ -82,7 +85,7 @@ func TestTailer(t *testing.T) {
 		// The tailer should detect truncation and read the new line
 		select {
 		case line := <-tailer.Lines:
-			assert.Equal(t, "new line 1", line.Buffer.String())
+			assert.Equal(t, "new line 1", string(line.Buffer))
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for line after truncation")
 		}
@@ -98,7 +101,8 @@ func TestTailer(t *testing.T) {
 
 		appender("old line 1\n")
 
-		tailer := NewTailer(logFilePath, 0, io.SeekStart)
+		ctx := context.Background()
+		tailer := NewTailer(ctx, logFilePath, 0, io.SeekStart)
 		tailer.Start()
 		defer tailer.Stop()
 
@@ -110,7 +114,7 @@ func TestTailer(t *testing.T) {
 
 		select {
 		case line := <-tailer.Lines:
-			assert.Equal(t, "new file line 1", line.Buffer.String())
+			assert.Equal(t, "new file line 1", string(line.Buffer))
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for line after rotation")
 		}
@@ -120,7 +124,8 @@ func TestTailer(t *testing.T) {
 		logFilePath, _, cleanup := setupTailerTest(t)
 		defer cleanup()
 
-		tailer := NewTailer(logFilePath, 0, io.SeekEnd)
+		ctx := context.Background()
+		tailer := NewTailer(ctx, logFilePath, 0, io.SeekEnd)
 		tailer.Start()
 
 		tailer.Stop()

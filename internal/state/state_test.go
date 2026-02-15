@@ -44,7 +44,7 @@ func TestStateLifecycle(t *testing.T) {
 
 		fs := GetOrCreateFileState(logFilePath)
 		fs.LineNumber = 100
-		SetCacheEntry("1.1.1.1", models.Result{Hostname: "one.one.one.one", Found: true})
+		SetCacheEntry("1.1.1.1", models.Result{Hostname: "one.one.one.one"})
 
 		// 2. Save the state.
 		require.NoError(t, Save(stateFilePath))
@@ -174,6 +174,17 @@ func TestFindMatchingPosition(t *testing.T) {
 			},
 			expectedLine:  2,
 			expectedFound: true,
+		},
+		{
+			name: "Same inode and size but stale modtime, should not match",
+			storedState: &FileState{
+				LineNumber:   2,
+				FileSize:     info.Size(),
+				LastModified: info.ModTime().Unix() - 60,
+				Inode:        inode,
+			},
+			expectedLine:  0,
+			expectedFound: false,
 		},
 		{
 			name: "Inode mismatch (rotation), should not match",
