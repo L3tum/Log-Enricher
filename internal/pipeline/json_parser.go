@@ -28,7 +28,10 @@ func (p *JSONParser) Process(logEntry *models.LogEntry) (bool, error) {
 		return true, nil
 	}
 
-	cacheKey := logEntry.SourcePath + string(logEntry.LogLine[0])
+	cacheKey := logEntry.SourcePath + ":empty"
+	if len(logEntry.LogLine) > 0 {
+		cacheKey = logEntry.SourcePath + string(logEntry.LogLine[0])
+	}
 
 	var success bool
 	var ok bool

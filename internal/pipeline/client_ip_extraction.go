@@ -104,7 +104,7 @@ func (s *ClientIpExtractionStage) Process(entry *models.LogEntry) (bool, error) 
 		clientField.name = field
 
 		if ip := s.validateAndCleanIP(&clientField, entry); ip != "" {
-			s.mostLikelyClientIpField.Set(entry.SourcePath, clientField)
+			s.mostLikelyClientIpField.Set(cacheKey, clientField)
 
 			entry.Fields[s.config.TargetField] = ip
 			slog.Debug("ClientIpExtractionStage: Found IP in field", "field", field, "ip", ip)
@@ -115,7 +115,7 @@ func (s *ClientIpExtractionStage) Process(entry *models.LogEntry) (bool, error) 
 
 	// If we reach this point, the IP was not found in any of the configured fields
 	clientField.name = ""
-	s.mostLikelyClientIpField.Set(entry.SourcePath, clientField)
+	s.mostLikelyClientIpField.Set(cacheKey, clientField)
 
 	slog.Debug("ClientIpExtractionStage: No client IP found after all attempts.")
 	return true, nil // Keep log even if IP not found.

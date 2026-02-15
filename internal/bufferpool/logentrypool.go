@@ -1,9 +1,10 @@
 package bufferpool
 
 import (
-	"log-enricher/internal/models"
 	"log/slog"
 	"time"
+
+	"log-enricher/internal/models"
 )
 
 // logEntryPool manages a pool of models.LogEntry instances.
@@ -111,12 +112,15 @@ func (op *logEntryPool) manageFieldCount() {
 					maxSize = 20
 				}
 				if op.mediumFieldCount > maxCount {
+					maxCount = op.mediumFieldCount
 					maxSize = 40
 				}
 				if op.largeFieldCount > maxCount {
+					maxCount = op.largeFieldCount
 					maxSize = 60
 				}
 				if op.hugeFieldCount > maxCount {
+					maxCount = op.hugeFieldCount
 					// Just keep the current size of the logEntry field
 					maxSize = 100
 				}
@@ -133,7 +137,7 @@ func (op *logEntryPool) adjustFieldSize(logEntry *models.LogEntry) {
 	maxSize := int(op.currentIdealFieldCount)
 
 	// Send the current field count to the channel
-	if logEntry.Fields != nil && len(logEntry.Fields) > 0 {
+	if len(logEntry.Fields) > 0 {
 		op.fieldCountChan <- uint32(len(logEntry.Fields))
 	}
 
@@ -145,7 +149,7 @@ func (op *logEntryPool) adjustFieldSize(logEntry *models.LogEntry) {
 	if logEntry.Fields == nil || (len(logEntry.Fields)-maxSize > 0 && maxSize < 100) {
 		logEntry.Fields = make(map[string]interface{}, maxSize)
 	} else {
-		for k, _ := range logEntry.Fields {
+		for k := range logEntry.Fields {
 			delete(logEntry.Fields, k)
 		}
 	}

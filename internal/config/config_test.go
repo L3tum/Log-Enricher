@@ -71,6 +71,16 @@ func TestLoadStages(t *testing.T) {
 			},
 		},
 		{
+			name: "applies_to is not included in params",
+			envVars: map[string]string{
+				"STAGE_0_TYPE":       "hostname_enrichment",
+				"STAGE_0_APPLIES_TO": `\\.log$`,
+			},
+			expectedStages: []StageConfig{
+				{Type: "hostname_enrichment", AppliesTo: `\\.log$`, Params: make(map[string]interface{})},
+			},
+		},
+		{
 			name: "single stage with params",
 			envVars: map[string]string{
 				"STAGE_0_TYPE": "geoip",

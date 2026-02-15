@@ -77,6 +77,16 @@ func (t *Tailer) openAndSeek() error {
 		return err
 	}
 
+	// Resume is line-based when reading from the start of the file.
+	// In this mode, offset is the number of lines to skip.
+	if t.whence == io.SeekStart && t.offset > 0 {
+		if err := t.seekToLineOffset(); err != nil {
+			t.file.Close()
+			return err
+		}
+		return nil
+	}
+
 	// Seek to the desired position.
 	if _, err := t.file.Seek(t.offset, t.whence); err != nil {
 		t.file.Close() // Close file on seek error
@@ -84,6 +94,32 @@ func (t *Tailer) openAndSeek() error {
 	}
 
 	return nil
+}
+
+func (t *Tailer) seekToLineOffset() error {
+	reader := bufio.NewReader(t.file)
+	var linesSkipped int64
+
+	for linesSkipped < t.offset {
+		_, err := reader.ReadBytes('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			return err
+		}
+		linesSkipped++
+	}
+
+	pos, err := t.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+
+	// bufio.Reader may have read ahead; rewind to the first unread byte.
+	pos -= int64(reader.Buffered())
+	_, err = t.file.Seek(pos, io.SeekStart)
+	return err
 }
 
 func (t *Tailer) run() {
@@ -146,11 +182,7 @@ func (t *Tailer) run() {
 			}
 		}
 
-		bytesBuf := bytes.Clone(bytes.TrimSpace(buf.Bytes()))
-
-		if len(bytesBuf) == 0 {
-			continue
-		}
+		bytesBuf := bytes.Clone(buf.Bytes())
 
 		// Reset backoff since we successfully read a line
 		t.resetBackoff()

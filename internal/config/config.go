@@ -3,27 +3,21 @@ package config
 import (
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
-	"time"
 )
 
 type Config struct {
-	StateFilePath               string
-	LogBasePath                 string
-	LogFileExtensions           []string
-	LogFilesIgnored             string
-	ParseTimestampEnabled       bool
-	TimestampFields             []string
-	Backend                     string
-	LokiURL                     string
-	EnrichedFileSuffix          string
-	AppName                     string
-	AppIdentificationRegex      string
-	LogLevel                    string
-	StructuredLogParsingEnabled bool
-	StructuredLogRegex          string
-	Stages                      []StageConfig
+	StateFilePath          string
+	LogBasePath            string
+	LogFileExtensions      []string
+	LogFilesIgnored        string
+	Backend                string
+	LokiURL                string
+	EnrichedFileSuffix     string
+	AppName                string
+	AppIdentificationRegex string
+	LogLevel               string
+	Stages                 []StageConfig
 }
 
 // StageConfig holds the configuration for a single pipeline stage.
@@ -76,8 +70,8 @@ func loadStages() []StageConfig {
 			if strings.HasPrefix(e, prefix) {
 				parts := strings.SplitN(e, "=", 2)
 				key := strings.ToLower(strings.TrimPrefix(parts[0], prefix))
-				// Only add to params if it's not 'type' or 'appliesto'
-				if key != "type" && key != "appliesto" {
+				// Only add to params if it's not 'type' or 'applies_to'
+				if key != "type" && key != "applies_to" {
 					stage.Params[key] = parts[1]
 				}
 			}
@@ -94,36 +88,9 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func getEnvInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if intVal, err := strconv.Atoi(value); err == nil {
-			return intVal
-		}
-	}
-	return defaultValue
-}
-
-func getEnvDuration(key string, defaultValue time.Duration) time.Duration {
-	if value := os.Getenv(key); value != "" {
-		if duration, err := time.ParseDuration(value); err == nil {
-			return duration
-		}
-	}
-	return defaultValue
-}
-
 func getEnvSlice(key string, defaultValue []string) []string {
 	if value := os.Getenv(key); value != "" {
 		return strings.Split(value, ",")
-	}
-	return defaultValue
-}
-
-func getEnvBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		if boolVal, err := strconv.ParseBool(value); err == nil {
-			return boolVal
-		}
 	}
 	return defaultValue
 }

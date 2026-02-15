@@ -82,8 +82,8 @@ func runApplication(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to initialize log manager: %w", err)
 	}
 
-	if manager.StartWatching(ctx) != nil {
-		return fmt.Errorf("failed to start log watcher")
+	if err := manager.StartWatching(ctx); err != nil {
+		return fmt.Errorf("failed to start log watcher: %w", err)
 	}
 
 	// Wait for the context to be cancelled (e.g., by signal handler or test)

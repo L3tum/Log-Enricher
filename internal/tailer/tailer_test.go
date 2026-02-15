@@ -63,6 +63,42 @@ func TestTailer(t *testing.T) {
 		assert.Equal(t, "line 3", string((<-tailer.Lines).Buffer))
 	})
 
+	t.Run("Resumes from line offset", func(t *testing.T) {
+		logFilePath, appender, cleanup := setupTailerTest(t)
+		defer cleanup()
+
+		appender("line 1\nline 2\nline 3\n")
+
+		ctx := context.Background()
+		tailer := NewTailer(ctx, logFilePath, 2, io.SeekStart) // skip first 2 lines
+		tailer.Start()
+		defer tailer.Stop()
+
+		select {
+		case line := <-tailer.Lines:
+			assert.Equal(t, "line 3", string(line.Buffer))
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for resumed line")
+		}
+	})
+
+	t.Run("Preserves whitespace-only lines", func(t *testing.T) {
+		logFilePath, appender, cleanup := setupTailerTest(t)
+		defer cleanup()
+
+		appender(" \n\t\n\nline\n")
+
+		ctx := context.Background()
+		tailer := NewTailer(ctx, logFilePath, 0, io.SeekStart)
+		tailer.Start()
+		defer tailer.Stop()
+
+		assert.Equal(t, " ", string((<-tailer.Lines).Buffer))
+		assert.Equal(t, "\t", string((<-tailer.Lines).Buffer))
+		assert.Equal(t, "", string((<-tailer.Lines).Buffer))
+		assert.Equal(t, "line", string((<-tailer.Lines).Buffer))
+	})
+
 	t.Run("Handles file truncation", func(t *testing.T) {
 		logFilePath, appender, cleanup := setupTailerTest(t)
 		defer cleanup()

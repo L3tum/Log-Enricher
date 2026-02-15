@@ -229,7 +229,7 @@ func (m *ManagerImpl) tailFile(ctx context.Context, path string) {
 	if fileState.GetLineNumber() > 0 {
 		if matchedLine, found := state.FindMatchingPosition(path, fileState); found {
 			slog.Info("State match for file", "path", path, "resume_after_line", matchedLine)
-			offset = matchedLine + 1
+			offset = matchedLine
 		} else {
 			slog.Info("State mismatch for file, processing from beginning", "path", path)
 			offset = 0
@@ -263,8 +263,8 @@ func (m *ManagerImpl) tailFile(ctx context.Context, path string) {
 				return
 			}
 
-			if lp.ProcessLine(line.Buffer) != nil {
-				return
+			if err := lp.ProcessLine(line.Buffer); err != nil {
+				slog.Error("Failed to process line, continuing", "path", path, "error", err)
 			}
 
 			// Update state in memory.

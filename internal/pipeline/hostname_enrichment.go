@@ -3,14 +3,15 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"log-enricher/internal/cache"
-	"log-enricher/internal/models"
-	"log-enricher/internal/network"
 	"log/slog"
 	"net"
 	"strings"
 	"sync"
 	"time"
+
+	"log-enricher/internal/cache"
+	"log-enricher/internal/models"
+	"log-enricher/internal/network"
 
 	"github.com/mitchellh/mapstructure"
 )
@@ -224,7 +225,6 @@ func (h *HostnameEnrichmentStage) doActiveDiscovery(ip string, isIPv6 bool) stri
 	// This goroutine waits for all lookup goroutines to complete and then signals.
 	go func() {
 		wg.Wait()
-		allLookupsFinished <- struct{}{}
 		close(allLookupsFinished)
 	}()
 
@@ -253,14 +253,14 @@ func (h *HostnameEnrichmentStage) doActiveDiscovery(ip string, isIPv6 bool) stri
 }
 
 func (h *HostnameEnrichmentStage) refresh() {
-	timer := time.NewTimer(30 * time.Minute)
-	defer timer.Stop()
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-h.ctx.Done():
 			return
-		case <-timer.C:
+		case <-ticker.C:
 			{
 				// Copy the cache to avoid concurrent modification errors.
 				ipsToMacs := h.ipToMacCache.Copy()
