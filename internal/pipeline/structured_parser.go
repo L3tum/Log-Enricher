@@ -20,6 +20,7 @@ type StructuredParserConfig struct {
 // StructuredParser parses log lines using a regular expression to extract key-value pairs.
 type StructuredParser struct {
 	regex                *regexp.Regexp
+	hasNamedGroups       bool
 	successfulParseCache *cache.PersistedCache[bool]
 }
 
@@ -45,9 +46,17 @@ func NewStructuredParser(params map[string]any) (Stage, error) {
 		return nil, fmt.Errorf("invalid structured log regex pattern: %w", err)
 	}
 
+	hasNamedGroups := false
+	for _, name := range regex.SubexpNames() {
+		if name != "" {
+			hasNamedGroups = true
+			break
+		}
+	}
+
 	// If there are no named capture groups, we expect it to be a key-value pair pattern with 2 groups.
 	// SubexpNames() includes the full match as the first element.
-	if len(regex.SubexpNames()) <= 1 && regex.NumSubexp() != 2 {
+	if !hasNamedGroups && regex.NumSubexp() != 2 {
 		return nil, fmt.Errorf("regex must have named capture groups, or exactly 2 unnamed capture groups for key-value pairs")
 	}
 
@@ -55,6 +64,7 @@ func NewStructuredParser(params map[string]any) (Stage, error) {
 
 	return &StructuredParser{
 		regex:                regex,
+		hasNamedGroups:       hasNamedGroups,
 		successfulParseCache: cache.NewPersistedCache[bool]("structured_parser_"+hash, 10, 100, true),
 	}, nil
 }
@@ -64,6 +74,9 @@ func (p *StructuredParser) Process(logEntry *models.LogEntry) (bool, error) {
 	// Skip any log lines that already have fields (another parser was successful)
 	if len(logEntry.Fields) > 0 {
 		return true, nil
+	}
+	if logEntry.Fields == nil {
+		logEntry.Fields = make(map[string]interface{})
 	}
 
 	cacheKey := logEntry.SourcePath + ":empty"
@@ -79,7 +92,7 @@ func (p *StructuredParser) Process(logEntry *models.LogEntry) (bool, error) {
 	}
 
 	// If the regex has named capture groups, use the named group parsing strategy.
-	if len(p.regex.SubexpNames()) > 1 {
+	if p.hasNamedGroups {
 		if !p.parseWithNamedGroups(logEntry) {
 			// If the regex didn't match, clear any fields that were partially parsed
 			for k := range logEntry.Fields {

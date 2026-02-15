@@ -12,11 +12,10 @@ import (
 
 // mockStage is a configurable mock for the Stage interface.
 type mockStage struct {
-	name       string
-	process    func(entry *models.LogEntry) (bool, error)
-	callCount  int
-	lastInput  map[string]interface{} // Stores a copy of the Fields map
-	isEnricher bool
+	name      string
+	process   func(entry *models.LogEntry) (bool, error)
+	callCount int
+	lastInput map[string]interface{} // Stores a copy of the Fields map
 }
 
 func (m *mockStage) Name() string {

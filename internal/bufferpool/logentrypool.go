@@ -74,60 +74,51 @@ func (op *logEntryPool) manageFieldCount() {
 	// First adjustment should be pretty soon so in around one minute
 	lastAdjustment := time.Now().Add(-9 * time.Minute)
 
-	for {
-		select {
-		case count, ok := <-op.fieldCountChan:
-			// Channel closed, stop the goroutine
-			if !ok {
-				return
+	for count := range op.fieldCountChan {
+		if count < 6 {
+			op.tinyFieldCount++
+		} else if count < 11 {
+			op.verySmallFieldCount++
+		} else if count < 21 {
+			op.smallFieldCount++
+		} else if count < 41 {
+			op.mediumFieldCount++
+		} else if count < 61 {
+			op.largeFieldCount++
+		} else {
+			op.hugeFieldCount++
+		}
+
+		// Do an adjustment every 10 minutes
+		if lastAdjustment.Before(time.Now().Add(-10 * time.Minute)) {
+			lastAdjustment = time.Now()
+
+			maxCount := op.tinyFieldCount
+			maxSize := uint32(5)
+
+			if op.verySmallFieldCount > maxCount {
+				maxCount = op.verySmallFieldCount
+				maxSize = 10
 			}
-
-			if count < 6 {
-				op.tinyFieldCount++
-			} else if count < 11 {
-				op.verySmallFieldCount++
-			} else if count < 21 {
-				op.smallFieldCount++
-			} else if count < 41 {
-				op.mediumFieldCount++
-			} else if count < 61 {
-				op.largeFieldCount++
-			} else {
-				op.hugeFieldCount++
+			if op.smallFieldCount > maxCount {
+				maxCount = op.smallFieldCount
+				maxSize = 20
 			}
-
-			// Do an adjustment every 10 minutes
-			if lastAdjustment.Before(time.Now().Add(-10 * time.Minute)) {
-				lastAdjustment = time.Now()
-
-				maxCount := op.tinyFieldCount
-				maxSize := uint32(5)
-
-				if op.verySmallFieldCount > maxCount {
-					maxCount = op.verySmallFieldCount
-					maxSize = 10
-				}
-				if op.smallFieldCount > maxCount {
-					maxCount = op.smallFieldCount
-					maxSize = 20
-				}
-				if op.mediumFieldCount > maxCount {
-					maxCount = op.mediumFieldCount
-					maxSize = 40
-				}
-				if op.largeFieldCount > maxCount {
-					maxCount = op.largeFieldCount
-					maxSize = 60
-				}
-				if op.hugeFieldCount > maxCount {
-					maxCount = op.hugeFieldCount
-					// Just keep the current size of the logEntry field
-					maxSize = 100
-				}
-				op.currentIdealFieldCount = maxSize
-				slog.Info("Current ideal field count", "fieldCount", op.currentIdealFieldCount)
-				slog.Info("Distribution", "tiny", op.tinyFieldCount, "verySmall", op.verySmallFieldCount, "small", op.smallFieldCount, "medium", op.mediumFieldCount, "large", op.largeFieldCount, "huge", op.hugeFieldCount)
+			if op.mediumFieldCount > maxCount {
+				maxCount = op.mediumFieldCount
+				maxSize = 40
 			}
+			if op.largeFieldCount > maxCount {
+				maxCount = op.largeFieldCount
+				maxSize = 60
+			}
+			if op.hugeFieldCount > maxCount {
+				// Just keep the current size of the logEntry field
+				maxSize = 100
+			}
+			op.currentIdealFieldCount = maxSize
+			slog.Info("Current ideal field count", "fieldCount", op.currentIdealFieldCount)
+			slog.Info("Distribution", "tiny", op.tinyFieldCount, "verySmall", op.verySmallFieldCount, "small", op.smallFieldCount, "medium", op.mediumFieldCount, "large", op.largeFieldCount, "huge", op.hugeFieldCount)
 		}
 	}
 }

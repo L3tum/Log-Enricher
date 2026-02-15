@@ -21,7 +21,7 @@
     }
   },
   "mounts": [
-    "source=logenricher-codex-home,target=/home/vscode/.codex,type=volume",
-    "source=logenricher-codex-config,target=/home/vscode/.config/codex,type=volume"
+    "source=logenricher-codex-home,target=/home/root/.codex,type=volume",
+    "source=logenricher-codex-config,target=/home/root/.config/codex,type=volume"
   ]
 }

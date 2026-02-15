@@ -43,7 +43,7 @@ func (p *LogProcessorImpl) ProcessLine(line []byte) error {
 
 	// Run through pipeline
 	keep := p.pipeline.Process(logEntry) // Pass the pointer
-	if keep == false {
+	if !keep {
 		// Drop the line if it was dropped by the pipeline
 		slog.Debug("Dropped line by pipeline", "path", p.sourcePath)
 		return nil
