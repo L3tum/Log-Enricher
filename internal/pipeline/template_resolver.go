@@ -145,7 +145,9 @@ func (s *TemplateResolverStage) Process(entry *models.LogEntry) (keep bool, err 
 		if keysMap, ok := keysAtPrefix.(map[string]any); ok {
 			for key, val := range keysMap {
 				nameInTemplate := "indexed_" + key
-				nameInEntry := append(prefixPath, key)
+				nameInEntry := make([]string, len(prefixPath)+1)
+				copy(nameInEntry, prefixPath)
+				nameInEntry[len(prefixPath)] = key
 				templateData[nameInTemplate] = val
 				fieldCaches = append(fieldCaches, fieldCache{nameInTemplate: nameInTemplate, nameInEntry: nameInEntry})
 			}
@@ -185,26 +187,11 @@ func (s *TemplateResolverStage) Process(entry *models.LogEntry) (keep bool, err 
 // If cached is true, it will only walk the fields map once.
 // It will return a string array (if it's not cached already) indicating the full path to the value
 func (s *TemplateResolverStage) walkFields(fields map[string]any, fieldPath []string, cached bool) (any, []string) {
-	var val any
-	var ok bool
-
-	// Try to get the value at the specified field path
-	for _, field := range fieldPath {
-		if len(field) == 0 {
-			break
-		}
-		if val, ok = fields[field]; !ok {
-			break
-		}
-	}
-
-	// If the value is found, return it as well as the path to it if it's not cached
-	if ok {
+	if val, ok := getValueAtPath(fields, fieldPath); ok {
 		if cached {
 			return val, nil
-		} else {
-			return val, fieldPath
 		}
+		return val, fieldPath
 	}
 
 	if !cached {
@@ -212,31 +199,49 @@ func (s *TemplateResolverStage) walkFields(fields map[string]any, fieldPath []st
 		if len(fieldPath) > 0 {
 			field := fieldPath[0]
 			if strings.Contains(field, ".") {
-				parts := strings.Split(field, ".")
-				val = fields
-				keys := []string{}
-				var mapped map[string]any
-
-				for _, part := range parts {
-					// If the part is empty, that likely means the prefix contained a dot as an ending, so we can safely skip that
-					if len(part) == 0 {
-						break
+				rawParts := strings.Split(field, ".")
+				parts := make([]string, 0, len(rawParts))
+				for _, part := range rawParts {
+					// If the part is empty, that likely means the prefix contained a trailing dot.
+					if part == "" {
+						continue
 					}
-
-					if mapped, ok = val.(map[string]any); ok {
-						val = mapped[part]
-						keys = append(keys, part)
-					} else {
-						break
-					}
+					parts = append(parts, part)
 				}
 
-				if ok {
-					return val, keys
+				if val, ok := getValueAtPath(fields, parts); ok {
+					return val, parts
 				}
 			}
 		}
 	}
 
 	return nil, nil
+}
+
+func getValueAtPath(fields map[string]any, fieldPath []string) (any, bool) {
+	if len(fieldPath) == 0 {
+		return nil, false
+	}
+
+	var current any = fields
+	for _, field := range fieldPath {
+		if field == "" {
+			return nil, false
+		}
+
+		mapped, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+
+		next, exists := mapped[field]
+		if !exists {
+			return nil, false
+		}
+
+		current = next
+	}
+
+	return current, true
 }

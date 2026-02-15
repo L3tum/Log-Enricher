@@ -228,6 +228,20 @@ func TestRunApplication_InvalidAppIdentificationRegex(t *testing.T) {
 	}
 }
 
+func TestRunApplication_LokiBackendMissingURL(t *testing.T) {
+	cfg := newMinimalConfig(t.TempDir())
+	cfg.Backend = "loki"
+	cfg.LokiURL = ""
+
+	err := runApplication(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error when BACKEND=loki without LOKI_URL")
+	}
+	if !strings.Contains(err.Error(), "LOKI_URL must be configured") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // getMemUsageMB returns the current heap allocation in MB after forcing a garbage collection.
 func getMemUsageMB() uint64 {
 	var m runtime.MemStats

@@ -9,6 +9,10 @@ import (
 )
 
 func CustomResolver(dnsServer string) *net.Resolver {
+	if strings.TrimSpace(dnsServer) == "" {
+		return net.DefaultResolver
+	}
+
 	return &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {

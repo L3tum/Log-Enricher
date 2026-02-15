@@ -30,6 +30,7 @@ type GeoIpEnrichmentStage struct {
 	db                *geoip2.Reader
 	mu                sync.RWMutex // Protects db
 	clientIpToCountry *cache.PersistedCache[string]
+	openDB            func(string) (*geoip2.Reader, error)
 }
 
 func (s *GeoIpEnrichmentStage) Name() string {
@@ -65,8 +66,14 @@ func (s *GeoIpEnrichmentStage) Process(entry *models.LogEntry) (keep bool, err e
 	} else {
 		s.clientIpToCountry.Miss()
 		s.mu.RLock()
-		country, err := s.db.Country(ip)
+		db := s.db
 		s.mu.RUnlock()
+		if db == nil {
+			slog.Warn("GeoIP: Database unavailable, skipping lookup", "ip", clientIP)
+			return true, nil
+		}
+
+		country, err := db.Country(ip)
 		if err != nil {
 			slog.Error("GeoIP: Error looking up country", "ip", clientIP, "error", err)
 			return true, nil
@@ -116,6 +123,7 @@ func NewGeoIPStage(ctx context.Context, params map[string]any) (Stage, error) {
 		config:            &stageConfig,
 		db:                db,
 		clientIpToCountry: cache.NewPersistedCache[string]("geoip_enrichment", 100, 1000, true),
+		openDB:            geoip2.Open,
 	}
 
 	go stage.watchForUpdates(ctx)
@@ -164,25 +172,18 @@ func (s *GeoIpEnrichmentStage) watchForUpdates(ctx context.Context) {
 
 // reloadDB handles the logic of swapping the GeoIP database.
 func (s *GeoIpEnrichmentStage) reloadDB() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// First, close the existing database to release the file lock before opening a new one.
-	if s.db != nil {
-		if err := s.db.Close(); err != nil {
-			slog.Error("GeoIP: Error closing old database", "error", err)
-		}
-		s.db = nil
+	open := s.openDB
+	if open == nil {
+		open = geoip2.Open
 	}
 
-	// Add a retry loop to handle transient file locks on Windows.
 	var newDb *geoip2.Reader
 	var err error
 	const maxRetries = 5
 	const retryDelay = 100 * time.Millisecond
 
 	for i := 0; i < maxRetries; i++ {
-		newDb, err = geoip2.Open(s.config.DatabasePath)
+		newDb, err = open(s.config.DatabasePath)
 		if err == nil {
 			break // Success
 		}
@@ -203,6 +204,16 @@ func (s *GeoIpEnrichmentStage) reloadDB() {
 		return
 	}
 
+	s.mu.Lock()
+	oldDb := s.db
 	s.db = newDb
+	s.mu.Unlock()
+
+	if oldDb != nil {
+		if closeErr := oldDb.Close(); closeErr != nil {
+			slog.Error("GeoIP: Error closing old database", "error", closeErr)
+		}
+	}
+
 	slog.Info("GeoIP: Database reloaded successfully.")
 }

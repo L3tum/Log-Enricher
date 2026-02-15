@@ -56,6 +56,10 @@ func runApplication(ctx context.Context, cfg *config.Config) error {
 	if cfg.Backend == "file" {
 		backend = backends.NewFileBackend(cfg.EnrichedFileSuffix)
 	} else if cfg.Backend == "loki" {
+		if cfg.LokiURL == "" {
+			return fmt.Errorf("LOKI_URL must be configured when BACKEND=loki")
+		}
+
 		var err error
 		backend, err = backends.NewLokiBackend(cfg.LokiURL)
 

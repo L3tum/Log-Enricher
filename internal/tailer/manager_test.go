@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"testing"
 
 	"log-enricher/internal/config"
@@ -32,10 +33,22 @@ type stubBackend struct{}
 func (b *stubBackend) Send(entry *models.LogEntry) error { return nil }
 func (b *stubBackend) Shutdown()                         {}
 func (b *stubBackend) Name() string                      { return "stub" }
-func (b *stubBackend) CloseWriter(sourcePath string)     {}
+func (b *stubBackend) CloseWriter(sourcePath string) {
+	stubBackendMu.Lock()
+	defer stubBackendMu.Unlock()
+	stubBackendClosed = append(stubBackendClosed, sourcePath)
+}
+
+var (
+	stubBackendMu     sync.Mutex
+	stubBackendClosed []string
+)
 
 func newTestManager(t *testing.T, cfg *config.Config) *ManagerImpl {
 	t.Helper()
+	stubBackendMu.Lock()
+	stubBackendClosed = nil
+	stubBackendMu.Unlock()
 	manager, err := NewManagerImpl(cfg, &stubPipelineManager{}, &stubBackend{})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -152,6 +165,34 @@ func TestManagerImpl_StartTailingFile_IgnoresMatchingFiles(t *testing.T) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	assert.Len(t, manager.tailedFiles, 0)
+}
+
+func TestManagerImpl_StopTailingFile_ClosesWriterOnce(t *testing.T) {
+	cfg := &config.Config{
+		LogBasePath:       t.TempDir(),
+		LogFileExtensions: []string{".log"},
+	}
+	manager := newTestManager(t, cfg)
+	path := filepath.Join(cfg.LogBasePath, "service.log")
+
+	cancelCalled := 0
+	manager.mu.Lock()
+	manager.tailedFiles[path] = func() { cancelCalled++ }
+	manager.mu.Unlock()
+
+	manager.stopTailingFile(path)
+	manager.stopTailingFile(path) // Idempotency check
+
+	manager.mu.Lock()
+	_, exists := manager.tailedFiles[path]
+	manager.mu.Unlock()
+	assert.False(t, exists)
+	assert.Equal(t, 1, cancelCalled)
+
+	stubBackendMu.Lock()
+	defer stubBackendMu.Unlock()
+	require.Len(t, stubBackendClosed, 1)
+	assert.Equal(t, path, stubBackendClosed[0])
 }
 
 func osWriteFile(path string, content string) error {

@@ -22,10 +22,10 @@ type LokiBackend struct {
 	client *loki.Client
 }
 
-// NewLokiBackend creates a new Loki backend. Returns nil if the URL is not provided.
+// NewLokiBackend creates a new Loki backend.
 func NewLokiBackend(lokiURL string) (*LokiBackend, error) {
 	if lokiURL == "" {
-		return nil, nil // Backend is disabled if no URL is set.
+		return nil, fmt.Errorf("loki URL is empty")
 	}
 
 	var u *url.URL

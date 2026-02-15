@@ -54,6 +54,10 @@ func (h *BackendHandler) Handle(ctx context.Context, r slog.Record) error {
 
 	// 2. Conditionally send to the backend based on minLevel.
 	if r.Level >= h.minLevel {
+		if h.backend == nil {
+			return nil
+		}
+
 		logEntry := bufferpool.LogEntryPool.Acquire()
 		defer bufferpool.LogEntryPool.Release(logEntry)
 		logEntry.Fields["level"] = r.Level.String()

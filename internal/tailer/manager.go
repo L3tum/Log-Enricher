@@ -210,13 +210,17 @@ func (m *ManagerImpl) startTailingFile(parentCtx context.Context, path string) {
 
 func (m *ManagerImpl) stopTailingFile(path string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	cancel, exists := m.tailedFiles[path]
+	if exists {
+		delete(m.tailedFiles, path)
+	}
+	m.mu.Unlock()
 
 	// Path is already cleaned by the caller.
-	if cancel, exists := m.tailedFiles[path]; exists {
-		slog.Info("Stopping tail for file due to file system event", "path", path)
+	if exists {
+		slog.Info("Stopping tail for file", "path", path)
 		cancel()
-		delete(m.tailedFiles, path)
+		m.bb.CloseWriter(path)
 	}
 }
 

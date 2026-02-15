@@ -5,9 +5,11 @@ import (
 	"log-enricher/internal/state"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestMain sets up the slog logger for tests.
@@ -339,4 +341,39 @@ func TestNewTemplateResolverStage_Validation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTemplateResolverStage_Process_CachedNestedFieldsRemainResolvable(t *testing.T) {
+	require.NoError(t, state.Initialize(filepath.Join(t.TempDir(), "state.json")))
+
+	stage, err := NewTemplateResolverStage(map[string]interface{}{
+		"template_field": "MessageTemplate",
+		"values_prefix":  "Properties.",
+		"output_field":   "RenderedMessage",
+	})
+	require.NoError(t, err)
+
+	makeEntry := func() *models.LogEntry {
+		return &models.LogEntry{
+			Fields: map[string]interface{}{
+				"MessageTemplate": "{0} {1}",
+				"Properties": map[string]interface{}{
+					"0": "Hello",
+					"1": "World",
+				},
+			},
+		}
+	}
+
+	first := makeEntry()
+	keep, err := stage.Process(first)
+	require.NoError(t, err)
+	require.True(t, keep)
+	assert.Equal(t, "Hello World", first.Fields["RenderedMessage"])
+
+	second := makeEntry()
+	keep, err = stage.Process(second)
+	require.NoError(t, err)
+	require.True(t, keep)
+	assert.Equal(t, "Hello World", second.Fields["RenderedMessage"])
 }
