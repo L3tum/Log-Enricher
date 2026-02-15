@@ -168,6 +168,66 @@ func TestRunApplicationWithFileBackend(t *testing.T) {
 	t.Logf("Enriched log file content:\n%s", enrichedContent)
 }
 
+func newMinimalConfig(tempDir string) *config.Config {
+	return &config.Config{
+		LogLevel:           "DEBUG",
+		Backend:            "file",
+		StateFilePath:      filepath.Join(tempDir, "state.json"),
+		LogBasePath:        tempDir,
+		EnrichedFileSuffix: ".enriched",
+		AppName:            "test-app",
+		LogFileExtensions:  []string{".log"},
+	}
+}
+
+func TestRunApplication_UnsupportedBackend(t *testing.T) {
+	cfg := newMinimalConfig(t.TempDir())
+	cfg.Backend = "unsupported"
+
+	err := runApplication(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for unsupported backend")
+	}
+	if !strings.Contains(err.Error(), "backend unsupported not supported") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestRunApplication_InvalidPipelineStage(t *testing.T) {
+	cfg := newMinimalConfig(t.TempDir())
+	cfg.Stages = []config.StageConfig{
+		{Type: "does_not_exist"},
+	}
+
+	err := runApplication(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid pipeline stage")
+	}
+	if !strings.Contains(err.Error(), "failed to initialize pipeline") {
+		t.Fatalf("expected pipeline initialization error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unknown stage type") {
+		t.Fatalf("expected unknown stage type error, got: %v", err)
+	}
+}
+
+func TestRunApplication_InvalidAppIdentificationRegex(t *testing.T) {
+	cfg := newMinimalConfig(t.TempDir())
+	cfg.AppName = ""
+	cfg.AppIdentificationRegex = `(?P<service>[^/]+)`
+
+	err := runApplication(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid app identification regex")
+	}
+	if !strings.Contains(err.Error(), "failed to initialize log manager") {
+		t.Fatalf("expected log manager initialization error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "named capture group 'app'") {
+		t.Fatalf("expected missing app capture group error, got: %v", err)
+	}
+}
+
 // getMemUsageMB returns the current heap allocation in MB after forcing a garbage collection.
 func getMemUsageMB() uint64 {
 	var m runtime.MemStats

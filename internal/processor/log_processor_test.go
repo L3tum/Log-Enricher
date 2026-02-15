@@ -2,6 +2,7 @@ package processor
 
 import (
 	"encoding/json"
+	"errors"
 	"log-enricher/internal/backends"
 	"log-enricher/internal/models"
 	"log-enricher/internal/pipeline"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,6 +37,42 @@ func TestMain(m *testing.M) {
 // for integration testing of the LogProcessor with real pipeline stages.
 type testPipeline struct {
 	stages []pipeline.Stage
+}
+
+type captureBackend struct {
+	entries []*models.LogEntry
+	err     error
+}
+
+func (b *captureBackend) Send(entry *models.LogEntry) error {
+	fields := make(map[string]interface{}, len(entry.Fields))
+	for k, v := range entry.Fields {
+		fields[k] = v
+	}
+
+	b.entries = append(b.entries, &models.LogEntry{
+		Fields:     fields,
+		LogLine:    append([]byte(nil), entry.LogLine...),
+		Timestamp:  entry.Timestamp,
+		SourcePath: entry.SourcePath,
+		App:        entry.App,
+	})
+	return b.err
+}
+
+func (b *captureBackend) Shutdown()                     {}
+func (b *captureBackend) Name() string                  { return "capture" }
+func (b *captureBackend) CloseWriter(sourcePath string) {}
+
+type timestampStage struct {
+	ts time.Time
+}
+
+func (s *timestampStage) Name() string { return "timestamp_stage" }
+
+func (s *timestampStage) Process(entry *models.LogEntry) (bool, error) {
+	entry.Timestamp = s.ts
+	return true, nil
 }
 
 // Process runs a log entry through the configured stages.
@@ -136,4 +174,57 @@ func TestLogProcessor_ProcessLine_NoParserMatches(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, string(line)+"\n", string(content))
+}
+
+func TestLogProcessor_ProcessLine_SetsMetadataAndFallbackTimestamp(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.log")
+	backend := &captureBackend{}
+	pl := &testPipeline{}
+	processor := NewLogProcessor("orders-api", sourcePath, pl, backend)
+
+	start := time.Now()
+	err := processor.ProcessLine([]byte("plain-text"))
+	end := time.Now()
+
+	require.NoError(t, err)
+	require.Len(t, backend.entries, 1)
+
+	entry := backend.entries[0]
+	assert.Equal(t, sourcePath, entry.SourcePath)
+	assert.Equal(t, "orders-api", entry.App)
+	assert.Equal(t, "plain-text", string(entry.LogLine))
+	assert.False(t, entry.Timestamp.Before(start))
+	assert.False(t, entry.Timestamp.After(end.Add(500*time.Millisecond)))
+}
+
+func TestLogProcessor_ProcessLine_PreservesTimestampFromPipeline(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.log")
+	backend := &captureBackend{}
+	fixed := time.Date(2025, time.January, 10, 11, 12, 13, 0, time.UTC)
+	pl := &testPipeline{
+		stages: []pipeline.Stage{
+			&timestampStage{ts: fixed},
+		},
+	}
+	processor := NewLogProcessor("orders-api", sourcePath, pl, backend)
+
+	err := processor.ProcessLine([]byte(`{"msg":"ok"}`))
+
+	require.NoError(t, err)
+	require.Len(t, backend.entries, 1)
+	assert.Equal(t, fixed, backend.entries[0].Timestamp)
+}
+
+func TestLogProcessor_ProcessLine_PropagatesBackendErrors(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.log")
+	expectedErr := errors.New("backend write failed")
+	backend := &captureBackend{err: expectedErr}
+	pl := &testPipeline{}
+	processor := NewLogProcessor("orders-api", sourcePath, pl, backend)
+
+	err := processor.ProcessLine([]byte("line"))
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, expectedErr)
+	require.Len(t, backend.entries, 1)
 }
