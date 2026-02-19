@@ -33,3 +33,16 @@ jobs:
       run: |
         go install honnef.co/go/tools/cmd/staticcheck@latest
         "$(go env GOPATH)/bin/staticcheck" ./...
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+
+    - name: Integration test
+      run: go test -tags=integration -run TestE2E_PromtailTailerLokiStreaming -count=1 -v ./...
