@@ -15,6 +15,7 @@ func TestTimestampExtractionStageProcess(t *testing.T) {
 		timestampFields        []string
 		customLayouts          []string
 		inputEntryFields       map[string]interface{}
+		initialTimestamp       time.Time
 		expectedTimestamp      time.Time
 		expectTimestampToBeNow bool
 		expectError            bool
@@ -68,6 +69,13 @@ func TestTimestampExtractionStageProcess(t *testing.T) {
 			inputEntryFields:       map[string]interface{}{"time": 12345, "message": "int time"},
 			expectTimestampToBeNow: true,
 		},
+		{
+			name:              "No parseable timestamp keeps existing timestamp",
+			timestampFields:   []string{"time"},
+			inputEntryFields:  map[string]interface{}{"time": "not-a-timestamp", "message": "keep existing"},
+			initialTimestamp:  time.Date(2026, time.April, 8, 9, 10, 11, 0, time.UTC),
+			expectedTimestamp: time.Date(2026, time.April, 8, 9, 10, 11, 0, time.UTC),
+		},
 	}
 
 	for _, tc := range testCases {
@@ -95,8 +103,7 @@ func TestTimestampExtractionStageProcess(t *testing.T) {
 			logEntry.Fields = tc.inputEntryFields // Copy fields
 			//logEntry.App = tc.name
 
-			// Ensure timestamp is zero before processing
-			logEntry.Timestamp = time.Time{}
+			logEntry.Timestamp = tc.initialTimestamp
 
 			// Act
 			keep, processErr := tsStage.Process(logEntry)

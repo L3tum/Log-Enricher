@@ -215,6 +215,39 @@ func TestLogProcessor_ProcessLine_PreservesTimestampFromPipeline(t *testing.T) {
 	assert.Equal(t, fixed, backend.entries[0].Timestamp)
 }
 
+func TestLogProcessor_ProcessLineWithTimestamp_UsesProvidedTimestamp(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.log")
+	backend := &captureBackend{}
+	pl := &testPipeline{}
+	processor := NewLogProcessor("orders-api", sourcePath, pl, backend)
+	provided := time.Date(2025, time.February, 20, 10, 11, 12, 123, time.UTC)
+
+	err := processor.ProcessLineWithTimestamp([]byte("line"), provided)
+
+	require.NoError(t, err)
+	require.Len(t, backend.entries, 1)
+	assert.Equal(t, provided, backend.entries[0].Timestamp)
+}
+
+func TestLogProcessor_ProcessLineWithTimestamp_PipelineCanOverrideTimestamp(t *testing.T) {
+	sourcePath := filepath.Join(t.TempDir(), "source.log")
+	backend := &captureBackend{}
+	provided := time.Date(2025, time.February, 20, 10, 11, 12, 123, time.UTC)
+	overridden := time.Date(2026, time.March, 21, 1, 2, 3, 0, time.UTC)
+	pl := &testPipeline{
+		stages: []pipeline.Stage{
+			&timestampStage{ts: overridden},
+		},
+	}
+	processor := NewLogProcessor("orders-api", sourcePath, pl, backend)
+
+	err := processor.ProcessLineWithTimestamp([]byte("line"), provided)
+
+	require.NoError(t, err)
+	require.Len(t, backend.entries, 1)
+	assert.Equal(t, overridden, backend.entries[0].Timestamp)
+}
+
 func TestLogProcessor_ProcessLine_PropagatesBackendErrors(t *testing.T) {
 	sourcePath := filepath.Join(t.TempDir(), "source.log")
 	expectedErr := errors.New("backend write failed")

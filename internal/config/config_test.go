@@ -17,6 +17,21 @@ func TestLoadConfig(t *testing.T) {
 		if cfg.LokiURL != "" {
 			t.Errorf("expected default LokiURL to be empty, got %s", cfg.LokiURL)
 		}
+		if cfg.PromtailHTTPEnabled {
+			t.Errorf("expected default PromtailHTTPEnabled to be false")
+		}
+		if cfg.PromtailHTTPAddr != "127.0.0.1:3500" {
+			t.Errorf("expected default PromtailHTTPAddr to be '127.0.0.1:3500', got %s", cfg.PromtailHTTPAddr)
+		}
+		if cfg.PromtailHTTPMaxBodyBytes != 10*1024*1024 {
+			t.Errorf("expected default PromtailHTTPMaxBodyBytes to be 10485760, got %d", cfg.PromtailHTTPMaxBodyBytes)
+		}
+		if cfg.PromtailHTTPBearerToken != "" {
+			t.Errorf("expected default PromtailHTTPBearerToken to be empty")
+		}
+		if cfg.PromtailHTTPSourceRoot != "/cache/promtail" {
+			t.Errorf("expected default PromtailHTTPSourceRoot to be '/cache/promtail', got %s", cfg.PromtailHTTPSourceRoot)
+		}
 	})
 
 	t.Run("overrides default values from environment variables", func(t *testing.T) {
@@ -27,6 +42,11 @@ func TestLoadConfig(t *testing.T) {
 		t.Setenv("LOKI_URL", "http://loki:3100")
 		t.Setenv("LOG_FILE_EXTENSIONS", ".log,.txt")
 		t.Setenv("BACKEND", "loki")
+		t.Setenv("PROMTAIL_HTTP_ENABLED", "true")
+		t.Setenv("PROMTAIL_HTTP_ADDR", "0.0.0.0:8080")
+		t.Setenv("PROMTAIL_HTTP_MAX_BODY_BYTES", "2048")
+		t.Setenv("PROMTAIL_HTTP_BEARER_TOKEN", "secret-token")
+		t.Setenv("PROMTAIL_HTTP_SOURCE_ROOT", "/tmp/promtail")
 
 		cfg := Load()
 
@@ -44,6 +64,35 @@ func TestLoadConfig(t *testing.T) {
 
 		if !reflect.DeepEqual(cfg.Backend, "loki") {
 			t.Errorf("expected overridden Backends to be %v, got %v", "loki", cfg.Backend)
+		}
+		if !cfg.PromtailHTTPEnabled {
+			t.Errorf("expected PromtailHTTPEnabled to be true")
+		}
+		if cfg.PromtailHTTPAddr != "0.0.0.0:8080" {
+			t.Errorf("expected PromtailHTTPAddr to be '0.0.0.0:8080', got %s", cfg.PromtailHTTPAddr)
+		}
+		if cfg.PromtailHTTPMaxBodyBytes != 2048 {
+			t.Errorf("expected PromtailHTTPMaxBodyBytes to be 2048, got %d", cfg.PromtailHTTPMaxBodyBytes)
+		}
+		if cfg.PromtailHTTPBearerToken != "secret-token" {
+			t.Errorf("expected PromtailHTTPBearerToken to be 'secret-token', got %s", cfg.PromtailHTTPBearerToken)
+		}
+		if cfg.PromtailHTTPSourceRoot != "/tmp/promtail" {
+			t.Errorf("expected PromtailHTTPSourceRoot to be '/tmp/promtail', got %s", cfg.PromtailHTTPSourceRoot)
+		}
+	})
+
+	t.Run("falls back to defaults for invalid bool and int values", func(t *testing.T) {
+		t.Setenv("PROMTAIL_HTTP_ENABLED", "not-a-bool")
+		t.Setenv("PROMTAIL_HTTP_MAX_BODY_BYTES", "not-an-int")
+
+		cfg := Load()
+
+		if cfg.PromtailHTTPEnabled {
+			t.Errorf("expected invalid PROMTAIL_HTTP_ENABLED to fall back to false")
+		}
+		if cfg.PromtailHTTPMaxBodyBytes != 10*1024*1024 {
+			t.Errorf("expected invalid PROMTAIL_HTTP_MAX_BODY_BYTES to fall back to 10485760, got %d", cfg.PromtailHTTPMaxBodyBytes)
 		}
 	})
 }

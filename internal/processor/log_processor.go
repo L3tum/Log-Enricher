@@ -10,6 +10,7 @@ import (
 
 type LogProcessor interface {
 	ProcessLine(line []byte) error
+	ProcessLineWithTimestamp(line []byte, ts time.Time) error
 }
 
 type LogProcessorImpl struct {
@@ -29,6 +30,14 @@ func NewLogProcessor(appName string, sourcePath string, processPipeline pipeline
 }
 
 func (p *LogProcessorImpl) ProcessLine(line []byte) error {
+	return p.processLine(line, nil)
+}
+
+func (p *LogProcessorImpl) ProcessLineWithTimestamp(line []byte, ts time.Time) error {
+	return p.processLine(line, &ts)
+}
+
+func (p *LogProcessorImpl) processLine(line []byte, ts *time.Time) error {
 	slog.Debug("Processing line", "path", p.sourcePath)
 	// Acquire a *models.LogEntry
 	logEntry := bufferpool.LogEntryPool.Acquire()
@@ -38,6 +47,9 @@ func (p *LogProcessorImpl) ProcessLine(line []byte) error {
 	logEntry.LogLine = line
 	logEntry.SourcePath = p.sourcePath
 	logEntry.App = p.appName
+	if ts != nil {
+		logEntry.Timestamp = *ts
+	}
 
 	slog.Debug("Parsed line", "path", p.sourcePath, "fields", logEntry.Fields)
 

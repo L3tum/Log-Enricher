@@ -1,6 +1,7 @@
 # Go Log Enricher
 
 `log-enricher` tails log files, runs each line through a configurable pipeline, and writes enriched output to a backend (`file` or `loki`).
+It can also receive Promtail push traffic over HTTP and route those entries through the same processing pipeline.
 
 The current architecture is:
 - Tailing and file discovery: `internal/tailer/*`
@@ -46,6 +47,23 @@ docker run -d \
   ghcr.io/l3tum/log-enricher
 ```
 
+### Promtail HTTP receiver (optional)
+
+```bash
+docker run -d \
+  --name log-enricher \
+  -e "PROMTAIL_HTTP_ENABLED=true" \
+  -e "PROMTAIL_HTTP_ADDR=127.0.0.1:3500" \
+  -e "PROMTAIL_HTTP_SOURCE_ROOT=/cache/promtail" \
+  -v /path/to/logs:/logs \
+  -v /path/to/cache:/cache \
+  ghcr.io/l3tum/log-enricher
+```
+
+Push endpoints:
+- `POST /loki/api/v1/push`
+- `POST /api/prom/push`
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -60,6 +78,11 @@ docker run -d \
 | `APP_NAME` | `` | Static app label for output |
 | `APP_IDENTIFICATION_REGEX` | `` | Regex with named group `app` to derive app from file path |
 | `LOG_LEVEL` | `INFO` | Global log level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
+| `PROMTAIL_HTTP_ENABLED` | `false` | Enable Promtail-compatible HTTP ingestion |
+| `PROMTAIL_HTTP_ADDR` | `127.0.0.1:3500` | Address for the HTTP receiver |
+| `PROMTAIL_HTTP_MAX_BODY_BYTES` | `10485760` | Maximum HTTP request body size in bytes |
+| `PROMTAIL_HTTP_BEARER_TOKEN` | `` | Optional bearer token for push endpoint authentication |
+| `PROMTAIL_HTTP_SOURCE_ROOT` | `/cache/promtail` | Root directory used when deriving source paths from labels |
 
 ## Pipeline Configuration
 

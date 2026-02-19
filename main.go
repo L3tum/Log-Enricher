@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log-enricher/internal/pipeline"
+	"log-enricher/internal/promtailhttp"
 	"log-enricher/internal/tailer"
 	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"log-enricher/internal/backends"
 	"log-enricher/internal/config"
@@ -79,6 +81,17 @@ func runApplication(ctx context.Context, cfg *config.Config) error {
 		return fmt.Errorf("failed to initialize pipeline: %w", err)
 	}
 
+	var promtailReceiver *promtailhttp.Receiver
+	if cfg.PromtailHTTPEnabled {
+		promtailReceiver, err = promtailhttp.NewReceiver(cfg, pipelineManager, backend)
+		if err != nil {
+			return fmt.Errorf("failed to initialize Promtail HTTP receiver: %w", err)
+		}
+		if err := promtailReceiver.Start(); err != nil {
+			return fmt.Errorf("failed to start Promtail HTTP receiver: %w", err)
+		}
+	}
+
 	// Create the log manager
 	manager, err := tailer.NewManagerImpl(cfg, pipelineManager, backend)
 
@@ -93,6 +106,14 @@ func runApplication(ctx context.Context, cfg *config.Config) error {
 	// Wait for the context to be cancelled (e.g., by signal handler or test)
 	<-ctx.Done()
 	slog.Info("Context cancelled, initiating shutdown sequence...")
+
+	if promtailReceiver != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := promtailReceiver.Shutdown(shutdownCtx); err != nil {
+			slog.Error("Error shutting down Promtail HTTP receiver", "error", err)
+		}
+	}
 
 	// Save unified state (includes file metadata, positions, and cache).
 	if err := state.Save(cfg.StateFilePath); err != nil {

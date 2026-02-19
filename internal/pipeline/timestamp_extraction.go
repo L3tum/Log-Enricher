@@ -149,7 +149,9 @@ func (s *TimestampExtractionStage) Process(entry *models.LogEntry) (bool, error)
 	s.mostLikelyTimestampField.Set(cacheKey, timestampField)
 
 	slog.Debug("TimestampExtractionStage: No timestamp found after all attempts.")
-	entry.Timestamp = time.Now()
+	if entry.Timestamp.IsZero() {
+		entry.Timestamp = time.Now()
+	}
 
 	return true, nil // Keep log even if timestamp not found/parsed from fields.
 }

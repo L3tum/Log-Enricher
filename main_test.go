@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,6 +16,8 @@ import (
 	"log-enricher/internal/config"
 
 	"github.com/goccy/go-json"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRunApplicationWithFileBackend(t *testing.T) {
@@ -242,6 +246,47 @@ func TestRunApplication_LokiBackendMissingURL(t *testing.T) {
 	}
 }
 
+func TestRunApplication_PromtailHTTPEnabled(t *testing.T) {
+	tempDir := t.TempDir()
+	addr := getFreeTCPAddr(t)
+	cfg := newMinimalConfig(tempDir)
+	cfg.PromtailHTTPEnabled = true
+	cfg.PromtailHTTPAddr = addr
+	cfg.PromtailHTTPMaxBodyBytes = 1024 * 1024
+	cfg.PromtailHTTPSourceRoot = filepath.Join(tempDir, "promtail")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runApplication(ctx, cfg)
+	}()
+
+	readyURL := "http://" + addr + "/ready"
+	require.Eventually(t, func() bool {
+		resp, err := http.Get(readyURL)
+		if err != nil {
+			return false
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}, 5*time.Second, 50*time.Millisecond)
+
+	cancel()
+	require.NoError(t, <-done)
+}
+
+func TestRunApplication_PromtailHTTPInvalidAddress(t *testing.T) {
+	cfg := newMinimalConfig(t.TempDir())
+	cfg.PromtailHTTPEnabled = true
+	cfg.PromtailHTTPAddr = "invalid addr"
+
+	err := runApplication(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start Promtail HTTP receiver")
+}
+
 // getMemUsageMB returns the current heap allocation in MB after forcing a garbage collection.
 func getMemUsageMB() uint64 {
 	var m runtime.MemStats
@@ -265,4 +310,12 @@ func mapsContain(expected, actual map[string]interface{}) bool {
 		}
 	}
 	return true
+}
+
+func getFreeTCPAddr(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	return ln.Addr().String()
 }

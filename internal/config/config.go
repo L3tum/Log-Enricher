@@ -3,21 +3,27 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 )
 
 type Config struct {
-	StateFilePath          string
-	LogBasePath            string
-	LogFileExtensions      []string
-	LogFilesIgnored        string
-	Backend                string
-	LokiURL                string
-	EnrichedFileSuffix     string
-	AppName                string
-	AppIdentificationRegex string
-	LogLevel               string
-	Stages                 []StageConfig
+	StateFilePath            string
+	LogBasePath              string
+	LogFileExtensions        []string
+	LogFilesIgnored          string
+	Backend                  string
+	LokiURL                  string
+	EnrichedFileSuffix       string
+	AppName                  string
+	AppIdentificationRegex   string
+	LogLevel                 string
+	PromtailHTTPEnabled      bool
+	PromtailHTTPAddr         string
+	PromtailHTTPMaxBodyBytes int
+	PromtailHTTPBearerToken  string
+	PromtailHTTPSourceRoot   string
+	Stages                   []StageConfig
 }
 
 // StageConfig holds the configuration for a single pipeline stage.
@@ -29,17 +35,22 @@ type StageConfig struct {
 
 func Load() *Config {
 	cfg := &Config{
-		StateFilePath:          getEnv("STATE_FILE_PATH", "/cache/state.json"),
-		LogBasePath:            getEnv("LOG_BASE_PATH", "/logs"),
-		LogFilesIgnored:        getEnv("LOG_FILES_IGNORED", ""),
-		LogFileExtensions:      getEnvSlice("LOG_FILE_EXTENSIONS", []string{".log"}),
-		Backend:                getEnv("BACKEND", "file"),
-		LokiURL:                getEnv("LOKI_URL", ""),
-		EnrichedFileSuffix:     getEnv("ENRICHED_FILE_SUFFIX", ".enriched"),
-		AppName:                getEnv("APP_NAME", ""),
-		AppIdentificationRegex: getEnv("APP_IDENTIFICATION_REGEX", ""),
-		LogLevel:               getEnv("LOG_LEVEL", "INFO"),
-		Stages:                 loadStages(),
+		StateFilePath:            getEnv("STATE_FILE_PATH", "/cache/state.json"),
+		LogBasePath:              getEnv("LOG_BASE_PATH", "/logs"),
+		LogFilesIgnored:          getEnv("LOG_FILES_IGNORED", ""),
+		LogFileExtensions:        getEnvSlice("LOG_FILE_EXTENSIONS", []string{".log"}),
+		Backend:                  getEnv("BACKEND", "file"),
+		LokiURL:                  getEnv("LOKI_URL", ""),
+		EnrichedFileSuffix:       getEnv("ENRICHED_FILE_SUFFIX", ".enriched"),
+		AppName:                  getEnv("APP_NAME", ""),
+		AppIdentificationRegex:   getEnv("APP_IDENTIFICATION_REGEX", ""),
+		LogLevel:                 getEnv("LOG_LEVEL", "INFO"),
+		PromtailHTTPEnabled:      getEnvBool("PROMTAIL_HTTP_ENABLED", false),
+		PromtailHTTPAddr:         getEnv("PROMTAIL_HTTP_ADDR", "127.0.0.1:3500"),
+		PromtailHTTPMaxBodyBytes: getEnvInt("PROMTAIL_HTTP_MAX_BODY_BYTES", 10*1024*1024),
+		PromtailHTTPBearerToken:  getEnv("PROMTAIL_HTTP_BEARER_TOKEN", ""),
+		PromtailHTTPSourceRoot:   getEnv("PROMTAIL_HTTP_SOURCE_ROOT", "/cache/promtail"),
+		Stages:                   loadStages(),
 	}
 
 	return cfg
@@ -91,6 +102,26 @@ func getEnv(key, defaultValue string) string {
 func getEnvSlice(key string, defaultValue []string) []string {
 	if value := os.Getenv(key); value != "" {
 		return strings.Split(value, ",")
+	}
+	return defaultValue
+}
+
+func getEnvBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+func getEnvInt(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		parsed, err := strconv.Atoi(value)
+		if err == nil {
+			return parsed
+		}
 	}
 	return defaultValue
 }
