@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log-enricher/internal/config"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,8 +18,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"log-enricher/internal/config"
 
 	"github.com/goccy/go-json"
 	"github.com/maxmind/mmdbwriter"
@@ -68,9 +67,9 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 	geoIPPath := filepath.Join(tempRoot, "geoip-test.mmdb")
 	promtailConfigPath := filepath.Join(tempRoot, "promtail-config.yml")
 
-	require.NoError(t, os.MkdirAll(directDir, 0o755))
-	require.NoError(t, os.MkdirAll(promtailDir, 0o755))
-	require.NoError(t, os.MkdirAll(promtailSourceRoot, 0o755))
+	require.NoError(t, os.MkdirAll(directDir, 0o777))
+	require.NoError(t, os.MkdirAll(promtailDir, 0o777))
+	require.NoError(t, os.MkdirAll(promtailSourceRoot, 0o777))
 	require.NoError(t, writeGeoIPTestDB(geoIPPath))
 
 	directFileOne := filepath.Join(directDir, "direct-a.log")
