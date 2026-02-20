@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -61,22 +62,20 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 
 	tempRoot := t.TempDir()
 	directDir := filepath.Join(tempRoot, "direct")
-	promtailDir := filepath.Join(tempRoot, "promtail")
 	promtailSourceRoot := filepath.Join(tempRoot, "promtail-source-root")
 	statePath := filepath.Join(tempRoot, "state.json")
 	geoIPPath := filepath.Join(tempRoot, "geoip-test.mmdb")
 	promtailConfigPath := filepath.Join(tempRoot, "promtail-config.yml")
 
 	require.NoError(t, os.MkdirAll(directDir, 0o777))
-	require.NoError(t, os.MkdirAll(promtailDir, 0o777))
 	require.NoError(t, os.MkdirAll(promtailSourceRoot, 0o777))
 	require.NoError(t, writeGeoIPTestDB(geoIPPath))
 
 	directFileOne := filepath.Join(directDir, "direct-a.log")
 	directFileTwo := filepath.Join(directDir, "direct-b.log")
-	promtailFileOne := filepath.Join(promtailDir, "promtail-a.log")
-	promtailFileTwo := filepath.Join(promtailDir, "promtail-b.log")
-	for _, path := range []string{directFileOne, directFileTwo, promtailFileOne, promtailFileTwo} {
+	promtailFileOne := "/var/log/promtail/promtail-a.log"
+	promtailFileTwo := "/var/log/promtail/promtail-b.log"
+	for _, path := range []string{directFileOne, directFileTwo} {
 		require.NoError(t, os.WriteFile(path, nil, 0o644))
 	}
 
@@ -99,7 +98,9 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 	require.NoError(t, err)
 	lokiBaseURL := "http://" + net.JoinHostPort(lokiHost, lokiPort.Port())
 
-	receiverAddr, receiverPort := getFreeLocalAddrAndPort(t)
+	receiverPort := getFreeTCPPort(t)
+	receiverBindAddr := net.JoinHostPort("0.0.0.0", strconv.Itoa(receiverPort))
+	receiverReadyAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(receiverPort))
 	appCfg := &config.Config{
 		LogLevel:                 "ERROR",
 		Backend:                  "loki",
@@ -109,7 +110,7 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 		LogFileExtensions:        []string{".log"},
 		AppName:                  "tailer-app",
 		PromtailHTTPEnabled:      true,
-		PromtailHTTPAddr:         receiverAddr,
+		PromtailHTTPAddr:         receiverBindAddr,
 		PromtailHTTPMaxBodyBytes: 10 * 1024 * 1024,
 		PromtailHTTPSourceRoot:   promtailSourceRoot,
 		Stages: []config.StageConfig{
@@ -154,7 +155,7 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 		done <- runApplication(appCtx, appCfg)
 	}()
 
-	receiverReadyURL := "http://" + receiverAddr + "/ready"
+	receiverReadyURL := "http://" + receiverReadyAddr + "/ready"
 	require.Eventually(t, func() bool {
 		resp, reqErr := http.Get(receiverReadyURL)
 		if reqErr != nil {
@@ -166,7 +167,6 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 
 	require.NoError(t, writePromtailConfig(promtailConfigPath, receiverPort))
 
-	promtailMount := testcontainers.BindMount(promtailDir, testcontainers.ContainerMountTarget("/var/log/promtail"))
 	promtailContainer, err := testcontainers.Run(
 		ctx,
 		"grafana/promtail:2.9.8",
@@ -177,7 +177,6 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 			ContainerFilePath: "/etc/promtail/config.yml",
 			FileMode:          0o644,
 		}),
-		testcontainers.WithMounts(promtailMount),
 		testcontainers.WithHostPortAccess(receiverPort),
 		testcontainers.WithWaitStrategy(
 			wait.ForListeningPort("9080/tcp").WithStartupTimeout(90*time.Second),
@@ -185,6 +184,8 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 	)
 	require.NoError(t, err)
 	testcontainers.CleanupContainer(t, promtailContainer)
+
+	require.NoError(t, ensureContainerLogFiles(ctx, promtailContainer, promtailFileOne, promtailFileTwo))
 
 	// Give tailer and Promtail a short moment to settle before writes.
 	time.Sleep(1 * time.Second)
@@ -196,7 +197,7 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 	batchOneMsgs := []string{}
 	batchTwoMsgs := []string{}
 
-	addExpected := func(filePath string, offsetSec int, msg string, app string, ipField string, ipValue string, normalizedIP string, country string) {
+	addExpected := func(writeFn func(string, map[string]any) error, filePath string, offsetSec int, msg string, app string, ipField string, ipValue string, normalizedIP string, country string) {
 		ts := baseTS.Add(time.Duration(offsetSec) * time.Second)
 		payload := map[string]any{
 			"ts":      ts.Format(time.RFC3339Nano),
@@ -204,7 +205,7 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 			"e2e_run": runID,
 		}
 		payload[ipField] = ipValue
-		require.NoError(t, appendJSONLine(filePath, payload))
+		require.NoError(t, writeFn(filePath, payload))
 		expectedByMsg[msg] = e2eExpectedEntry{
 			msg:       msg,
 			app:       app,
@@ -214,10 +215,14 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 		}
 	}
 
-	addExpected(directFileOne, 1, "direct-a-batch-1", "tailer-app", "ip", "1.1.1.5", "1.1.1.5", "AU")
-	addExpected(directFileTwo, 2, "direct-b-batch-1", "tailer-app", "remote_addr", "8.8.8.8:443", "8.8.8.8", "US")
-	addExpected(promtailFileOne, 3, "promtail-a-batch-1", "promtail-app", "ip", "1.1.1.9", "1.1.1.9", "AU")
-	addExpected(promtailFileTwo, 4, "promtail-b-batch-1", "promtail-app", "remote_addr", "8.8.8.8:8443", "8.8.8.8", "US")
+	addExpected(appendJSONLine, directFileOne, 1, "direct-a-batch-1", "tailer-app", "ip", "1.1.1.5", "1.1.1.5", "AU")
+	addExpected(appendJSONLine, directFileTwo, 2, "direct-b-batch-1", "tailer-app", "remote_addr", "8.8.8.8:443", "8.8.8.8", "US")
+	addExpected(func(path string, payload map[string]any) error {
+		return appendJSONLineInContainer(ctx, promtailContainer, path, payload)
+	}, promtailFileOne, 3, "promtail-a-batch-1", "promtail-app", "ip", "1.1.1.9", "1.1.1.9", "AU")
+	addExpected(func(path string, payload map[string]any) error {
+		return appendJSONLineInContainer(ctx, promtailContainer, path, payload)
+	}, promtailFileTwo, 4, "promtail-b-batch-1", "promtail-app", "remote_addr", "8.8.8.8:8443", "8.8.8.8", "US")
 	batchOneMsgs = append(batchOneMsgs, "direct-a-batch-1", "direct-b-batch-1", "promtail-a-batch-1", "promtail-b-batch-1")
 
 	queryStart := baseTS.Add(-2 * time.Minute)
@@ -230,10 +235,14 @@ func TestE2E_PromtailTailerLokiStreaming(t *testing.T) {
 		return containsAllMessages(observed, batchOneMsgs)
 	}, 90*time.Second, 1*time.Second, "batch 1 logs did not arrive in Loki in time")
 
-	addExpected(directFileOne, 5, "direct-a-batch-2", "tailer-app", "ip", "1.1.1.11", "1.1.1.11", "AU")
-	addExpected(directFileTwo, 6, "direct-b-batch-2", "tailer-app", "remote_addr", "8.8.8.8:9443", "8.8.8.8", "US")
-	addExpected(promtailFileOne, 7, "promtail-a-batch-2", "promtail-app", "ip", "1.1.1.19", "1.1.1.19", "AU")
-	addExpected(promtailFileTwo, 8, "promtail-b-batch-2", "promtail-app", "remote_addr", "8.8.8.8:10443", "8.8.8.8", "US")
+	addExpected(appendJSONLine, directFileOne, 5, "direct-a-batch-2", "tailer-app", "ip", "1.1.1.11", "1.1.1.11", "AU")
+	addExpected(appendJSONLine, directFileTwo, 6, "direct-b-batch-2", "tailer-app", "remote_addr", "8.8.8.8:9443", "8.8.8.8", "US")
+	addExpected(func(path string, payload map[string]any) error {
+		return appendJSONLineInContainer(ctx, promtailContainer, path, payload)
+	}, promtailFileOne, 7, "promtail-a-batch-2", "promtail-app", "ip", "1.1.1.19", "1.1.1.19", "AU")
+	addExpected(func(path string, payload map[string]any) error {
+		return appendJSONLineInContainer(ctx, promtailContainer, path, payload)
+	}, promtailFileTwo, 8, "promtail-b-batch-2", "promtail-app", "remote_addr", "8.8.8.8:10443", "8.8.8.8", "US")
 	batchTwoMsgs = append(batchTwoMsgs, "direct-a-batch-2", "direct-b-batch-2", "promtail-a-batch-2", "promtail-b-batch-2")
 
 	allMsgs := append(append([]string{}, batchOneMsgs...), batchTwoMsgs...)
@@ -355,6 +364,60 @@ func appendJSONLine(path string, payload map[string]any) error {
 	return nil
 }
 
+func appendJSONLineInContainer(ctx context.Context, c testcontainers.Container, path string, payload map[string]any) error {
+	line, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	cmd := fmt.Sprintf("printf '%%s\\n' %s >> %s", shellSingleQuote(string(line)), shellSingleQuote(path))
+	exitCode, output, err := c.Exec(ctx, []string{"sh", "-c", cmd})
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		out, _ := io.ReadAll(output)
+		return fmt.Errorf("failed to append to %s in container (exit %d): %s", path, exitCode, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+func ensureContainerLogFiles(ctx context.Context, c testcontainers.Container, paths ...string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	commands := make([]string, 0, len(paths)*2)
+	seenDirs := make(map[string]struct{}, len(paths))
+	for _, filePath := range paths {
+		dir := path.Dir(filePath)
+		if dir != "." {
+			if _, ok := seenDirs[dir]; !ok {
+				commands = append(commands, "mkdir -p "+shellSingleQuote(dir))
+				seenDirs[dir] = struct{}{}
+			}
+		}
+		commands = append(commands, "touch "+shellSingleQuote(filePath))
+	}
+
+	cmd := strings.Join(commands, " && ")
+	exitCode, output, err := c.Exec(ctx, []string{"sh", "-c", cmd})
+	if err != nil {
+		return err
+	}
+	if exitCode != 0 {
+		out, _ := io.ReadAll(output)
+		return fmt.Errorf("failed to prepare log files in container (exit %d): %s", exitCode, strings.TrimSpace(string(out)))
+	}
+
+	return nil
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
 func fetchObservedEntries(ctx context.Context, lokiBaseURL string, runID string, start time.Time, end time.Time) (map[string][]lokiObservedEntry, []string, error) {
 	query := fmt.Sprintf(`{job="log-enricher"} |= %q`, runID)
 	requestURL := fmt.Sprintf("%s/loki/api/v1/query_range?query=%s&start=%d&end=%d&limit=1000&direction=forward",
@@ -455,18 +518,24 @@ func stringField(fields map[string]any, key string) string {
 	return value
 }
 
-func getFreeLocalAddrAndPort(t *testing.T) (string, int) {
+func getFreeTCPPort(t *testing.T) int {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer listener.Close()
+	const (
+		startPort = 3500
+		endPort   = 4500
+	)
 
-	host, portText, err := net.SplitHostPort(listener.Addr().String())
-	require.NoError(t, err)
+	for port := startPort; port <= endPort; port++ {
+		addr := net.JoinHostPort("0.0.0.0", strconv.Itoa(port))
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			continue
+		}
+		_ = listener.Close()
+		return port
+	}
 
-	port, err := strconv.Atoi(portText)
-	require.NoError(t, err)
-
-	return net.JoinHostPort(host, portText), port
+	t.Fatalf("failed to find available receiver port in range %d-%d", startPort, endPort)
+	return 0
 }

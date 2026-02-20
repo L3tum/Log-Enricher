@@ -39,6 +39,7 @@ This document captures expected runtime behavior across the active ingestion pat
 
 ## Promtail HTTP Receiver
 
+- Listens on configured `PROMTAIL_HTTP_ADDR` (default `0.0.0.0:3500`).
 - Routes:
   - `POST /loki/api/v1/push`
   - `POST /api/prom/push`

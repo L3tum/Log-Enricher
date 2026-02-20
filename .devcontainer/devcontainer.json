@@ -1,11 +1,13 @@
 {
-  "name": "log-enricher-go1.24",
-  "build": {
-    "dockerfile": "Dockerfile",
-    "context": ".."
-  },
+  "name": "log-enricher",
+  "image": "mcr.microsoft.com/vscode/devcontainers/go:latest",
   "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
-  "postCreateCommand": "go mod download",
+  "postCreateCommand": "go install honnef.co/go/tools/cmd/staticcheck@latest &&go mod download",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": false
+    }
+  },
   "customizations": {
     "vscode": {
       "extensions": [
@@ -21,7 +23,7 @@
     }
   },
   "mounts": [
-    "source=logenricher-codex-home,target=/home/root/.codex,type=volume",
-    "source=logenricher-codex-config,target=/home/root/.config/codex,type=volume"
+    "source=codex-home,target=/home/root/.codex,type=volume",
+    "source=codex-config,target=/home/root/.config/codex,type=volume"
   ]
 }

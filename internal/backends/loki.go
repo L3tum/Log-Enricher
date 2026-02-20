@@ -17,6 +17,8 @@ import (
 	"github.com/prometheus/common/model"
 )
 
+const defaultLokiPushPath = "/loki/api/v1/push"
+
 // LokiBackend sends enriched logs to a Grafana Loki instance.
 type LokiBackend struct {
 	client *loki.Client
@@ -24,16 +26,9 @@ type LokiBackend struct {
 
 // NewLokiBackend creates a new Loki backend.
 func NewLokiBackend(lokiURL string) (*LokiBackend, error) {
-	if lokiURL == "" {
-		return nil, fmt.Errorf("loki URL is empty")
-	}
-
-	var u *url.URL
-	var err error
-
-	u, err = url.Parse(lokiURL)
+	u, err := normalizeLokiPushURL(lokiURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse Loki URL: %w", err)
+		return nil, err
 	}
 
 	// Wait for Loki to become ready before creating a client.
@@ -83,6 +78,23 @@ func NewLokiBackend(lokiURL string) (*LokiBackend, error) {
 		client: client,
 	}
 	return b, nil
+}
+
+func normalizeLokiPushURL(lokiURL string) (*url.URL, error) {
+	if lokiURL == "" {
+		return nil, fmt.Errorf("loki URL is empty")
+	}
+
+	u, err := url.Parse(lokiURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Loki URL: %w", err)
+	}
+
+	if u.Path == "" || u.Path == "/" {
+		u.Path = defaultLokiPushPath
+	}
+
+	return u, nil
 }
 
 func (b *LokiBackend) Name() string {

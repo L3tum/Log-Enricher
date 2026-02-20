@@ -53,7 +53,7 @@ docker run -d \
 docker run -d \
   --name log-enricher \
   -e "PROMTAIL_HTTP_ENABLED=true" \
-  -e "PROMTAIL_HTTP_ADDR=127.0.0.1:3500" \
+  -e "PROMTAIL_HTTP_ADDR=0.0.0.0:3500" \
   -e "PROMTAIL_HTTP_SOURCE_ROOT=/cache/promtail" \
   -v /path/to/logs:/logs \
   -v /path/to/cache:/cache \
@@ -63,6 +63,8 @@ docker run -d \
 Push endpoints:
 - `POST /loki/api/v1/push`
 - `POST /api/prom/push`
+
+Use `PROMTAIL_HTTP_ADDR=127.0.0.1:3500` when push traffic should stay host-local only.
 
 ## Environment Variables
 
@@ -79,7 +81,7 @@ Push endpoints:
 | `APP_IDENTIFICATION_REGEX` | `` | Regex with named group `app` to derive app from file path |
 | `LOG_LEVEL` | `INFO` | Global log level (`DEBUG`, `INFO`, `WARN`, `ERROR`) |
 | `PROMTAIL_HTTP_ENABLED` | `false` | Enable Promtail-compatible HTTP ingestion |
-| `PROMTAIL_HTTP_ADDR` | `127.0.0.1:3500` | Address for the HTTP receiver |
+| `PROMTAIL_HTTP_ADDR` | `0.0.0.0:3500` | Address for the HTTP receiver |
 | `PROMTAIL_HTTP_MAX_BODY_BYTES` | `10485760` | Maximum HTTP request body size in bytes |
 | `PROMTAIL_HTTP_BEARER_TOKEN` | `` | Optional bearer token for push endpoint authentication |
 | `PROMTAIL_HTTP_SOURCE_ROOT` | `/cache/promtail` | Root directory used when deriving source paths from labels |

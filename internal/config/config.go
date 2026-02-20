@@ -46,7 +46,7 @@ func Load() *Config {
 		AppIdentificationRegex:   getEnv("APP_IDENTIFICATION_REGEX", ""),
 		LogLevel:                 getEnv("LOG_LEVEL", "INFO"),
 		PromtailHTTPEnabled:      getEnvBool("PROMTAIL_HTTP_ENABLED", false),
-		PromtailHTTPAddr:         getEnv("PROMTAIL_HTTP_ADDR", "127.0.0.1:3500"),
+		PromtailHTTPAddr:         getEnv("PROMTAIL_HTTP_ADDR", "0.0.0.0:3500"),
 		PromtailHTTPMaxBodyBytes: getEnvInt("PROMTAIL_HTTP_MAX_BODY_BYTES", 10*1024*1024),
 		PromtailHTTPBearerToken:  getEnv("PROMTAIL_HTTP_BEARER_TOKEN", ""),
 		PromtailHTTPSourceRoot:   getEnv("PROMTAIL_HTTP_SOURCE_ROOT", "/cache/promtail"),

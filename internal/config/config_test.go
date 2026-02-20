@@ -20,8 +20,8 @@ func TestLoadConfig(t *testing.T) {
 		if cfg.PromtailHTTPEnabled {
 			t.Errorf("expected default PromtailHTTPEnabled to be false")
 		}
-		if cfg.PromtailHTTPAddr != "127.0.0.1:3500" {
-			t.Errorf("expected default PromtailHTTPAddr to be '127.0.0.1:3500', got %s", cfg.PromtailHTTPAddr)
+		if cfg.PromtailHTTPAddr != "0.0.0.0:3500" {
+			t.Errorf("expected default PromtailHTTPAddr to be '0.0.0.0:3500', got %s", cfg.PromtailHTTPAddr)
 		}
 		if cfg.PromtailHTTPMaxBodyBytes != 10*1024*1024 {
 			t.Errorf("expected default PromtailHTTPMaxBodyBytes to be 10485760, got %d", cfg.PromtailHTTPMaxBodyBytes)
