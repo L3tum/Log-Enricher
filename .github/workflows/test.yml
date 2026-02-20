@@ -48,12 +48,7 @@ jobs:
         run: go test -tags=integration -run TestE2E_PromtailTailerLokiStreaming -count=1 -v ./...
 
   publish:
-    if: >
-      github.event_name == 'release' &&
-      github.event.action == 'published' &&
-      github.server_url != 'https://github.com'
-    uses: l3tum/reusable-workflows/.github/workflows/publish-images.yml@v1
+    needs: [integration,test]
+    if: github.event_name == 'release' && github.event.action == 'published' && github.server_url != 'https://github.com'
+    uses: l3tum/reusable-workflows/.github/workflows/publish-forgejo.yml@v2
     runs-on: ubuntu-latest
-    with:
-      publish_forgejo: true
-      publish_public: false
