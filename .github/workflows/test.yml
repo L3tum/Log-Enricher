@@ -46,3 +46,9 @@ jobs:
 
       - name: Integration test
         run: go test -tags=integration -run TestE2E_PromtailTailerLokiStreaming -count=1 -v ./...
+
+  publish:
+    uses: l3tum/reusable-workflows/.github/workflows/publish-images.yml@v1
+    with:
+      publish_forgejo: true
+      publish_public: false
