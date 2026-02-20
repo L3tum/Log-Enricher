@@ -49,7 +49,7 @@ jobs:
 
   publish:
     if: >
-    	github.event_name == 'release' &&
+      github.event_name == 'release' &&
       github.event.action == 'published' &&
       github.server_url != 'https://github.com'
     uses: l3tum/reusable-workflows/.github/workflows/publish-images.yml@v1
