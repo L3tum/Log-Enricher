@@ -1,6 +1,4 @@
 name: Test
-permissions:
-  contents: read
 
 on:
   push:
@@ -55,5 +53,5 @@ jobs:
   publish:
     needs: [integration,test]
     if: github.event_name == 'release' && github.event.action == 'published' && github.server_url != 'https://github.com'
-    uses: l3tum/reusable-workflows/.github/workflows/publish-forgejo.yml@v2
+    uses: https://forgejo.mortimer.website/l3tum/reusable-workflows/.github/workflows/publish-forgejo.yml@v2
     runs-on: ubuntu-latest
