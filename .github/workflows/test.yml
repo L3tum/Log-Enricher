@@ -47,6 +47,15 @@ jobs:
       - name: Integration test
         run: go test -tags=integration -run TestE2E_PromtailTailerLokiStreaming -count=1 -v ./...
 
+  debug-context:
+    runs-on: docker
+    steps:
+      - name: Dump Forgejo context
+        run: |
+          cat <<'EOF'
+          ${{ toJSON(forgejo) }}
+          EOF
+  
   publish:
     needs: [integration,test]
     if: github.event_name == 'release' && github.event.action == 'published' && github.server_url != 'https://github.com'
