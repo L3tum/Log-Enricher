@@ -48,7 +48,7 @@ jobs:
         run: go test -tags=integration -run TestE2E_PromtailTailerLokiStreaming -count=1 -v ./...
 
   debug-context:
-    runs-on: docker
+    runs-on: ubuntu-latest
     steps:
       - name: Dump Forgejo context
         run: |
