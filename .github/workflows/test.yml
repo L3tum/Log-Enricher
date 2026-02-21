@@ -4,7 +4,12 @@ permissions:
 
 on:
   push:
+    branches:
+      - "**"
   pull_request:
+  release:
+    types:
+      - published
 
 jobs:
   test:
@@ -46,3 +51,9 @@ jobs:
 
       - name: Integration test
         run: go test -tags=integration -run TestE2E_PromtailTailerLokiStreaming -count=1 -v ./...
+  
+  publish:
+    needs: [integration,test]
+    if: github.event_name == 'release' && github.event.action == 'published' && github.server_url != 'https://github.com'
+    uses: l3tum/reusable-workflows/.github/workflows/publish-forgejo.yml@v2
+    runs-on: ubuntu-latest
