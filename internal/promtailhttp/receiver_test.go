@@ -121,6 +121,45 @@ func TestReceiver_ProtobufSnappyAndPathSanitization(t *testing.T) {
 	assert.Equal(t, filepath.Join(sourceRoot, "etc", "passwd"), entries[0].SourcePath)
 }
 
+func TestReceiver_ProtobufSnappyContentEncodingOnPushRoute(t *testing.T) {
+	cfg := &config.Config{
+		AppName:                  "",
+		PromtailHTTPAddr:         "127.0.0.1:0",
+		PromtailHTTPMaxBodyBytes: 1024 * 1024,
+		PromtailHTTPSourceRoot:   t.TempDir(),
+	}
+	backend := &captureBackend{}
+	_, srv := newTestReceiver(t, cfg, backend)
+
+	ts := time.Date(2026, time.February, 14, 15, 16, 17, 18, time.UTC)
+	reqBody := buildProtobufBody(t, push.PushRequest{
+		Streams: []push.Stream{
+			{
+				Labels: `{app="alloy",filename="/var/log/alloy.log"}`,
+				Entries: []push.Entry{
+					{Timestamp: ts, Line: "line-from-snappy-header"},
+				},
+			},
+		},
+	})
+
+	req, err := http.NewRequest(http.MethodPost, srv.URL+"/loki/api/v1/push", bytes.NewReader(reqBody))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", protobufContentType)
+	req.Header.Set("Content-Encoding", "snappy")
+
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	require.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	entries := backend.snapshot()
+	require.Len(t, entries, 1)
+	assert.Equal(t, "alloy", entries[0].App)
+	assert.Equal(t, "line-from-snappy-header", string(entries[0].LogLine))
+	assert.Equal(t, ts, entries[0].Timestamp)
+}
+
 func TestReceiver_ProtobufSnappyGzipOnLegacyRoute(t *testing.T) {
 	cfg := &config.Config{
 		AppName:                  "",
@@ -263,6 +302,19 @@ func TestReceiver_ValidationAndAuthResponses(t *testing.T) {
 		require.NoError(t, err)
 		req.Header.Set("Authorization", "Bearer secret")
 		req.Header.Set("Content-Type", "text/plain")
+
+		resp, err := srv.Client().Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusUnsupportedMediaType, resp.StatusCode)
+	})
+
+	t.Run("unsupported snappy encoding for json payload", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodPost, srv.URL+"/loki/api/v1/push", strings.NewReader(`{"streams":[]}`))
+		require.NoError(t, err)
+		req.Header.Set("Authorization", "Bearer secret")
+		req.Header.Set("Content-Type", jsonContentType)
+		req.Header.Set("Content-Encoding", "snappy")
 
 		resp, err := srv.Client().Do(req)
 		require.NoError(t, err)

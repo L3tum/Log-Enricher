@@ -64,6 +64,11 @@ Push endpoints:
 - `POST /loki/api/v1/push`
 - `POST /api/prom/push`
 
+Supported request encodings:
+- `identity` / no `Content-Encoding`
+- `gzip`
+- `snappy` only with `Content-Type: application/x-protobuf` (Alloy compatibility)
+
 Use `PROMTAIL_HTTP_ADDR=127.0.0.1:3500` when push traffic should stay host-local only.
 
 ## Environment Variables

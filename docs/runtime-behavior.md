@@ -50,6 +50,7 @@ This document captures expected runtime behavior across the active ingestion pat
 - Supported request content encoding:
   - identity
   - gzip
+  - snappy (only for `application/x-protobuf`; treated as compatibility mode for Alloy-style pushes)
 - If `PROMTAIL_HTTP_BEARER_TOKEN` is configured, push routes require `Authorization: Bearer <token>`.
 - Request parsing is strict and rejects malformed payloads before processing entries.
 - Source path resolution from labels is sanitized and always rooted under `PROMTAIL_HTTP_SOURCE_ROOT`.

@@ -190,7 +190,7 @@ func (r *Receiver) parseRequest(w http.ResponseWriter, req *http.Request) ([]nor
 		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("unsupported content type: %s", contentType)
 	}
 
-	body, status, err := r.readBody(w, req)
+	body, status, err := r.readBody(w, req, mediaType)
 	if err != nil {
 		return nil, status, err
 	}
@@ -205,7 +205,7 @@ func (r *Receiver) parseRequest(w http.ResponseWriter, req *http.Request) ([]nor
 	}
 }
 
-func (r *Receiver) readBody(w http.ResponseWriter, req *http.Request) ([]byte, int, error) {
+func (r *Receiver) readBody(w http.ResponseWriter, req *http.Request, mediaType string) ([]byte, int, error) {
 	limited := http.MaxBytesReader(w, req.Body, r.maxBodySize)
 	defer limited.Close()
 
@@ -221,6 +221,12 @@ func (r *Receiver) readBody(w http.ResponseWriter, req *http.Request) ([]byte, i
 		}
 		defer gzr.Close()
 		reader = gzr
+	case "snappy":
+		if mediaType != protobufContentType {
+			return nil, http.StatusUnsupportedMediaType, fmt.Errorf("unsupported content encoding: %s", encoding)
+		}
+		// Alloy may set Content-Encoding=snappy for protobuf push requests where
+		// the payload body is already the snappy-compressed protobuf frame.
 	default:
 		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("unsupported content encoding: %s", encoding)
 	}
