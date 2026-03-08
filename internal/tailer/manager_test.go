@@ -7,10 +7,12 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	"log-enricher/internal/config"
 	"log-enricher/internal/models"
 	"log-enricher/internal/pipeline"
+	"log-enricher/internal/state"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -193,6 +195,96 @@ func TestManagerImpl_StopTailingFile_ClosesWriterOnce(t *testing.T) {
 	defer stubBackendMu.Unlock()
 	require.Len(t, stubBackendClosed, 1)
 	assert.Equal(t, path, stubBackendClosed[0])
+}
+
+func TestManagerImpl_StartWatching_DiscoversBrandNewFileAfterStartup(t *testing.T) {
+	cfg := &config.Config{
+		LogBasePath:       t.TempDir(),
+		LogFileExtensions: []string{".log"},
+	}
+
+	manager := newTestManager(t, cfg)
+	manager.reconcileInterval = 20 * time.Millisecond
+	require.NoError(t, state.Initialize(filepath.Join(cfg.LogBasePath, "state.json")))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, manager.StartWatching(ctx))
+
+	logPath := filepath.Join(cfg.LogBasePath, "service.log")
+	require.NoError(t, osWriteFile(logPath, "line\n"))
+
+	require.Eventually(t, func() bool {
+		return isTailingPath(manager, logPath)
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func TestManagerImpl_StartWatching_DiscoversFilesInDirectoryCreatedAfterStartup(t *testing.T) {
+	cfg := &config.Config{
+		LogBasePath:       t.TempDir(),
+		LogFileExtensions: []string{".log"},
+	}
+
+	manager := newTestManager(t, cfg)
+	manager.reconcileInterval = 20 * time.Millisecond
+	require.NoError(t, state.Initialize(filepath.Join(cfg.LogBasePath, "state.json")))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	require.NoError(t, manager.StartWatching(ctx))
+
+	logPath := filepath.Join(cfg.LogBasePath, "nested", "worker.log")
+	require.NoError(t, osWriteFile(logPath, "line\n"))
+
+	require.Eventually(t, func() bool {
+		return isTailingPath(manager, logPath)
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func TestManagerImpl_ReconcilesExistingFileAfterInitialScanSkipFromStaleTracking(t *testing.T) {
+	cfg := &config.Config{
+		LogBasePath:       t.TempDir(),
+		LogFileExtensions: []string{".log"},
+	}
+
+	manager := newTestManager(t, cfg)
+	manager.reconcileInterval = 20 * time.Millisecond
+	require.NoError(t, state.Initialize(filepath.Join(cfg.LogBasePath, "state.json")))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	logPath := filepath.Join(cfg.LogBasePath, "stale-window.log")
+	require.NoError(t, osWriteFile(logPath, "line\n"))
+
+	manager.mu.Lock()
+	manager.tailedFiles[logPath] = func() {}
+	manager.mu.Unlock()
+
+	require.NoError(t, manager.StartWatching(ctx))
+
+	manager.mu.Lock()
+	_, exists := manager.tailedFiles[logPath]
+	manager.mu.Unlock()
+	require.True(t, exists, "stale tracking entry should still be present before reconciliation")
+
+	manager.mu.Lock()
+	delete(manager.tailedFiles, logPath)
+	manager.mu.Unlock()
+
+	require.Eventually(t, func() bool {
+		return isTailingPath(manager, logPath)
+	}, 2*time.Second, 20*time.Millisecond)
+}
+
+func isTailingPath(manager *ManagerImpl, path string) bool {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	_, exists := manager.tailedFiles[path]
+	return exists
 }
 
 func osWriteFile(path string, content string) error {

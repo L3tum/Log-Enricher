@@ -138,9 +138,11 @@ func UpdateAllFileMetadata() {
 		fileState.mu.Lock()
 		info, err := os.Stat(path)
 		if err != nil {
-			slog.Error("Could not stat file for metadata update", "path", path, "error", err)
+			slog.Warn("Could not stat file for metadata update; preserving file state", "path", path, "error", err)
+			fileState.FileSize = 0
+			fileState.LastModified = 0
+			fileState.Inode = 0
 			fileState.mu.Unlock()
-			delete(globalState.Files, path)
 			continue
 		}
 		fileState.FileSize = info.Size()

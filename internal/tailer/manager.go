@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 )
@@ -23,10 +24,13 @@ type Manager interface {
 	StartWatching(ctx context.Context) error
 }
 
+const defaultReconcileInterval = 5 * time.Second
+
 type ManagerImpl struct {
 	cfg                  *config.Config
 	appIdentification    *regexp.Regexp
 	watcher              *fsnotify.Watcher
+	reconcileInterval    time.Duration
 	mu                   sync.Mutex // Protects tailedFiles
 	tailedFiles          map[string]context.CancelFunc
 	pm                   pipeline.Manager
@@ -36,10 +40,11 @@ type ManagerImpl struct {
 
 func NewManagerImpl(cfg *config.Config, pm pipeline.Manager, bb backends.Backend) (*ManagerImpl, error) {
 	manager := &ManagerImpl{
-		cfg:         cfg,
-		tailedFiles: make(map[string]context.CancelFunc),
-		pm:          pm,
-		bb:          bb,
+		cfg:               cfg,
+		reconcileInterval: defaultReconcileInterval,
+		tailedFiles:       make(map[string]context.CancelFunc),
+		pm:                pm,
+		bb:                bb,
 	}
 
 	// Compile app identification regex if provided
@@ -88,6 +93,7 @@ func NewManagerImpl(cfg *config.Config, pm pipeline.Manager, bb backends.Backend
 func (m *ManagerImpl) StartWatching(ctx context.Context) error {
 	// Watch for new files being created in the directory.
 	go m.watch(ctx)
+	go m.reconcileLoop(ctx)
 
 	// Add base path to watcher to discover new files.
 	// We also need to add all existing subdirectories to the watcher
@@ -111,16 +117,53 @@ func (m *ManagerImpl) StartWatching(ctx context.Context) error {
 	}
 
 	// Initial scan for existing files
+	slog.Info("Starting initial log file discovery", "base_path", m.cfg.LogBasePath, "discovery_reason", "startup_scan")
 	files, err := m.getMatchingLogFiles(m.cfg.LogBasePath)
 	if err != nil {
 		return fmt.Errorf("failed to get matching log files: %w", err)
 	}
+	slog.Info("Initial log file discovery complete", "base_path", m.cfg.LogBasePath, "matches", len(files), "discovery_reason", "startup_scan")
 
 	for _, file := range files {
-		m.startTailingFile(ctx, filepath.Clean(file))
+		m.startTailingFileWithReason(ctx, filepath.Clean(file), "startup_scan")
 	}
 
 	return nil
+}
+
+func (m *ManagerImpl) reconcileLoop(ctx context.Context) {
+	if m.reconcileInterval <= 0 {
+		slog.Info("Periodic file reconciliation disabled")
+		return
+	}
+
+	ticker := time.NewTicker(m.reconcileInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			m.reconcileMatchingFiles(ctx)
+		}
+	}
+}
+
+func (m *ManagerImpl) reconcileMatchingFiles(ctx context.Context) {
+	files, err := m.getMatchingLogFiles(m.cfg.LogBasePath)
+	if err != nil {
+		slog.Error("Periodic file reconciliation failed", "path", m.cfg.LogBasePath, "error", err)
+		return
+	}
+
+	for _, file := range files {
+		cleanedPath := filepath.Clean(file)
+		if !m.isCurrentlyTailing(cleanedPath) {
+			slog.Info("Periodic reconciliation discovered matching file", "path", cleanedPath, "discovery_reason", "periodic_reconcile")
+		}
+		m.startTailingFileWithReason(ctx, cleanedPath, "periodic_reconcile")
+	}
 }
 
 func (m *ManagerImpl) watch(ctx context.Context) {
@@ -162,17 +205,20 @@ func (m *ManagerImpl) watch(ctx context.Context) {
 					}
 
 					for _, file := range newFiles {
-						m.startTailingFile(ctx, filepath.Clean(file))
+						cleanedFile := filepath.Clean(file)
+						slog.Info("Discovered matching file from new directory scan", "path", cleanedFile, "discovery_reason", "fsnotify_create_directory_scan")
+						m.startTailingFileWithReason(ctx, cleanedFile, "fsnotify_create_directory_scan")
 					}
 				} else if m.matchesAnyExtension(cleanedEventName) {
-					m.startTailingFile(ctx, cleanedEventName)
+					slog.Info("Discovered matching file from fsnotify create", "path", cleanedEventName, "discovery_reason", "fsnotify_create_file")
+					m.startTailingFileWithReason(ctx, cleanedEventName, "fsnotify_create_file")
 				}
 			} else if event.Op&fsnotify.Remove == fsnotify.Remove {
-				m.stopTailingFile(cleanedEventName)
+				m.stopTailingFileWithReason(cleanedEventName, "fsnotify_remove")
 			} else if event.Op&fsnotify.Rename == fsnotify.Rename {
 				// A rename is treated as a removal of the old file name.
 				// The new file name will trigger a CREATE event if it's created within the watched directory.
-				m.stopTailingFile(cleanedEventName)
+				m.stopTailingFileWithReason(cleanedEventName, "fsnotify_rename")
 			}
 		case err, ok := <-m.watcher.Errors:
 			if !ok {
@@ -184,8 +230,12 @@ func (m *ManagerImpl) watch(ctx context.Context) {
 }
 
 func (m *ManagerImpl) startTailingFile(parentCtx context.Context, path string) {
+	m.startTailingFileWithReason(parentCtx, path, "unspecified")
+}
+
+func (m *ManagerImpl) startTailingFileWithReason(parentCtx context.Context, path string, reason string) {
 	if m.ignoredLogFilesRegex != nil && m.ignoredLogFilesRegex.MatchString(path) {
-		slog.Info("Ignoring file due to regex", "path", path)
+		slog.Info("Ignoring file due to regex", "path", path, "discovery_reason", reason)
 		return
 	}
 
@@ -194,21 +244,25 @@ func (m *ManagerImpl) startTailingFile(parentCtx context.Context, path string) {
 
 	// Path is already cleaned by the caller.
 	if _, exists := m.tailedFiles[path]; exists {
-		// Already tailing this file, do nothing.
+		slog.Debug("Already tailing file; skipping start", "path", path, "discovery_reason", reason)
 		return
 	}
 
-	slog.Info("Starting to tail file", "path", path)
+	slog.Info("Starting to tail file", "path", path, "discovery_reason", reason)
 	tailerCtx, cancel := context.WithCancel(parentCtx)
 	m.tailedFiles[path] = cancel
 
 	go func() {
-		defer m.stopTailingFile(path)
+		defer m.stopTailingFileWithReason(path, "tailer_exit")
 		m.tailFile(tailerCtx, path)
 	}()
 }
 
 func (m *ManagerImpl) stopTailingFile(path string) {
+	m.stopTailingFileWithReason(path, "unspecified")
+}
+
+func (m *ManagerImpl) stopTailingFileWithReason(path string, reason string) {
 	m.mu.Lock()
 	cancel, exists := m.tailedFiles[path]
 	if exists {
@@ -218,10 +272,18 @@ func (m *ManagerImpl) stopTailingFile(path string) {
 
 	// Path is already cleaned by the caller.
 	if exists {
-		slog.Info("Stopping tail for file", "path", path)
+		slog.Info("Stopping tail for file", "path", path, "stop_reason", reason)
 		cancel()
 		m.bb.CloseWriter(path)
 	}
+}
+
+func (m *ManagerImpl) isCurrentlyTailing(path string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	_, exists := m.tailedFiles[path]
+	return exists
 }
 
 func (m *ManagerImpl) tailFile(ctx context.Context, path string) {
@@ -232,14 +294,14 @@ func (m *ManagerImpl) tailFile(ctx context.Context, path string) {
 
 	if fileState.GetLineNumber() > 0 {
 		if matchedLine, found := state.FindMatchingPosition(path, fileState); found {
-			slog.Info("State match for file", "path", path, "resume_after_line", matchedLine)
+			slog.Info("File state resume decision", "path", path, "decision", "resume", "decision_reason", "state_match", "resume_after_line", matchedLine)
 			offset = matchedLine
 		} else {
-			slog.Info("State mismatch for file, processing from beginning", "path", path)
+			slog.Info("File state resume decision", "path", path, "decision", "restart_from_beginning", "decision_reason", "state_mismatch")
 			offset = 0
 		}
 	} else {
-		slog.Info("No state for file, starting from beginning", "path", path)
+		slog.Info("File state resume decision", "path", path, "decision", "restart_from_beginning", "decision_reason", "no_previous_state")
 	}
 
 	t := NewTailer(ctx, path, offset, whence)

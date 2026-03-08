@@ -287,6 +287,77 @@ func TestRunApplication_PromtailHTTPInvalidAddress(t *testing.T) {
 	assert.Contains(t, err.Error(), "failed to start Promtail HTTP receiver")
 }
 
+func TestRunApplication_RestartRecoversAfterMissingFileAndRecreation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := newMinimalConfig(tempDir)
+
+	logPath := filepath.Join(tempDir, "service.log")
+	rotatedPath := filepath.Join(tempDir, "service.log.1")
+	enrichedPath := logPath + cfg.EnrichedFileSuffix
+
+	require.NoError(t, os.WriteFile(logPath, nil, 0o644))
+
+	oldMarkers := []string{"old-1", "old-2", "old-3"}
+	oldLines := make([]string, 0, len(oldMarkers))
+	for _, marker := range oldMarkers {
+		oldLines = append(oldLines, fmt.Sprintf(`{"level":"info","msg":"phase-one","marker":"%s"}`, marker))
+	}
+
+	cancelFirst, doneFirst := startApplicationForTest(t, cfg)
+	appendLogLines(t, logPath, oldLines)
+
+	oldExpected := map[string]int{"old-1": 1, "old-2": 1, "old-3": 1}
+	waitForMarkerCounts(t, enrichedPath, oldExpected)
+
+	cancelFirst()
+	require.NoError(t, <-doneFirst)
+
+	require.NoError(t, os.Rename(logPath, rotatedPath))
+
+	newMarkers := []string{"new-1", "new-2"}
+	newLines := make([]string, 0, len(newMarkers))
+	for _, marker := range newMarkers {
+		newLines = append(newLines, fmt.Sprintf(`{"level":"info","msg":"phase-two","marker":"%s"}`, marker))
+	}
+	appendLogLines(t, logPath, newLines)
+
+	cancelSecond, doneSecond := startApplicationForTest(t, cfg)
+
+	combinedExpected := map[string]int{
+		"old-1": 1,
+		"old-2": 1,
+		"old-3": 1,
+		"new-1": 1,
+		"new-2": 1,
+	}
+	waitForMarkerCounts(t, enrichedPath, combinedExpected)
+
+	cancelSecond()
+	require.NoError(t, <-doneSecond)
+}
+
+func TestRunApplication_DiscoversNewFileCreatedAfterStartup(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := newMinimalConfig(tempDir)
+
+	logPath := filepath.Join(tempDir, "late.log")
+	enrichedPath := logPath + cfg.EnrichedFileSuffix
+
+	cancel, done := startApplicationForTest(t, cfg)
+	defer func() {
+		cancel()
+		require.NoError(t, <-done)
+	}()
+
+	lateLines := []string{
+		`{"level":"info","msg":"late-file","marker":"late-1"}`,
+		`{"level":"info","msg":"late-file","marker":"late-2"}`,
+	}
+	appendLogLines(t, logPath, lateLines)
+
+	waitForMarkerCounts(t, enrichedPath, map[string]int{"late-1": 1, "late-2": 1})
+}
+
 // getMemUsageMB returns the current heap allocation in MB after forcing a garbage collection.
 func getMemUsageMB() uint64 {
 	var m runtime.MemStats
@@ -318,4 +389,79 @@ func getFreeTCPAddr(t *testing.T) string {
 	require.NoError(t, err)
 	defer ln.Close()
 	return ln.Addr().String()
+}
+
+func startApplicationForTest(t *testing.T, cfg *config.Config) (context.CancelFunc, <-chan error) {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	go func() {
+		done <- runApplication(ctx, cfg)
+	}()
+
+	return cancel, done
+}
+
+func appendLogLines(t *testing.T, path string, lines []string) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o644)
+	require.NoError(t, err)
+	defer f.Close()
+
+	for _, line := range lines {
+		_, err := fmt.Fprintln(f, line)
+		require.NoError(t, err)
+	}
+}
+
+func waitForMarkerCounts(t *testing.T, enrichedPath string, expected map[string]int) {
+	t.Helper()
+
+	require.Eventually(t, func() bool {
+		counts, err := readMarkerCounts(enrichedPath)
+		if err != nil {
+			return false
+		}
+
+		for marker, expectedCount := range expected {
+			if counts[marker] != expectedCount {
+				return false
+			}
+		}
+
+		return true
+	}, 10*time.Second, 100*time.Millisecond)
+}
+
+func readMarkerCounts(enrichedPath string) (map[string]int, error) {
+	content, err := os.ReadFile(enrichedPath)
+	if err != nil {
+		return nil, err
+	}
+
+	counts := make(map[string]int)
+	for _, line := range strings.Split(strings.TrimSpace(string(content)), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		var entry map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			return nil, err
+		}
+
+		marker, ok := entry["marker"].(string)
+		if !ok {
+			continue
+		}
+
+		counts[marker]++
+	}
+
+	return counts, nil
 }
