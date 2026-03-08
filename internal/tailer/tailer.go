@@ -212,15 +212,15 @@ func (t *Tailer) handleEOF() error {
 		// If we can't stat the file, it might have been deleted or permissions changed.
 		// Try to reopen.
 		if os.IsNotExist(err) {
-			slog.Warn("File disappeared during stat, attempting to reopen.", "path", t.path)
-			return t.reopen()
+			slog.Warn("File disappeared during open-file stat, attempting reopen", "path", t.path, "lifecycle_event", "open_file_missing", "reopen_reason", "open_file_stat_not_exist")
+			return t.reopenWithReason("open_file_stat_not_exist")
 		}
 		return err
 	}
 
 	// Case 1: File was truncated.
 	if info.Size() < pos {
-		slog.Info("File was truncated (size < current pos), seeking to beginning.", "path", t.path, "size", info.Size(), "pos", pos)
+		slog.Info("Detected file truncation, seeking to beginning", "path", t.path, "lifecycle_event", "truncation", "size", info.Size(), "pos", pos)
 		t.resetBackoff() // Reset backoff on file change
 		if _, err := t.file.Seek(0, io.SeekStart); err != nil {
 			return err
@@ -245,27 +245,25 @@ func (t *Tailer) handleEOF() error {
 	infoOnDisk, err := os.Stat(t.path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			slog.Warn("File disappeared, attempting to reopen.", "path", t.path)
+			slog.Warn("File path missing on disk, attempting reopen", "path", t.path, "lifecycle_event", "path_missing", "reopen_reason", "path_stat_not_exist")
 			// On file change reopen() already calls resetBackoff() internally
-			return t.reopen()
+			return t.reopenWithReason("path_stat_not_exist")
 		}
 		return err
 	}
 
 	// Compare the file on disk with the file we have open.
 	if !os.SameFile(info, infoOnDisk) {
-		slog.Info("File was rotated, opening new file.", "path", t.path)
+		slog.Info("Detected file rotation, opening new file", "path", t.path, "lifecycle_event", "rotation", "reopen_reason", "inode_or_handle_changed")
 		// On file change reopen() already calls resetBackoff() internally
-		return t.reopen()
+		return t.reopenWithReason("inode_or_handle_changed")
 	}
 
 	t.applyBackoff()
 	return nil
 }
 
-// reopen attempts to close the current file and open the new one at the same path.
-// This is used for log rotation and deletion/recreation.
-func (t *Tailer) reopen() error {
+func (t *Tailer) reopenWithReason(reason string) error {
 	t.file.Close()
 
 	reopenAttempts := 0 // Local counter for this specific reopen cycle
@@ -280,7 +278,7 @@ func (t *Tailer) reopen() error {
 				// Success!
 				t.file = file
 				t.reader.Reset(t.file)
-				slog.Debug("Successfully reopened file", "path", t.path)
+				slog.Debug("Successfully reopened file", "path", t.path, "lifecycle_event", "reopen_success", "reopen_reason", reason)
 				t.resetBackoff() // Reset backoff on successful reopen
 				return nil
 			}
@@ -288,7 +286,7 @@ func (t *Tailer) reopen() error {
 			if os.IsNotExist(err) {
 				reopenAttempts++
 				if reopenAttempts > MAX_REOPEN_ATTEMPTS {
-					slog.Error("Failed to reopen file. Giving up.", "path", t.path, "attempts", MAX_REOPEN_ATTEMPTS)
+					slog.Error("Failed to reopen file after maximum attempts", "path", t.path, "attempts", MAX_REOPEN_ATTEMPTS, "lifecycle_event", "reopen_exhausted", "reopen_reason", reason)
 					return fmt.Errorf("failed to reopen file %s after %d attempts", t.path, MAX_REOPEN_ATTEMPTS)
 				}
 				// File not there yet, wait a bit.

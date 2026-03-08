@@ -11,6 +11,9 @@
 # IDE-specific files
 .idea/
 .vscode/
+.clavix
+!.clavix/outputs
+.opencode
 
 # Build and dependency directories
 /bin

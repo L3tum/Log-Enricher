@@ -94,6 +94,33 @@ func TestStateLifecycle(t *testing.T) {
 		err := Initialize("")
 		assert.Error(t, err)
 	})
+
+	t.Run("Save preserves previously known file that is now missing", func(t *testing.T) {
+		tmpDir, cleanup := setupTestState(t)
+		defer cleanup()
+
+		stateFilePath := filepath.Join(tmpDir, "state.json")
+		existingLog := filepath.Join(tmpDir, "exists.log")
+		missingLog := filepath.Join(tmpDir, "missing.log")
+
+		require.NoError(t, os.WriteFile(existingLog, []byte("line\n"), 0o644))
+		require.NoError(t, os.WriteFile(missingLog, []byte("line\n"), 0o644))
+		require.NoError(t, Initialize(stateFilePath))
+
+		existingState := GetOrCreateFileState(existingLog)
+		existingState.LineNumber = 11
+		missingState := GetOrCreateFileState(missingLog)
+		missingState.LineNumber = 27
+
+		require.NoError(t, os.Remove(missingLog))
+		require.NoError(t, Save(stateFilePath))
+
+		require.NoError(t, Initialize(stateFilePath))
+
+		loadedMissing := GetOrCreateFileState(missingLog)
+		assert.Equal(t, missingLog, loadedMissing.Path)
+		assert.Equal(t, int64(27), loadedMissing.LineNumber)
+	})
 }
 
 // This new test suite focuses on file-specific state operations.
@@ -126,8 +153,10 @@ func TestFileStateOperations(t *testing.T) {
 		require.NoError(t, os.WriteFile(existingLog, []byte("content"), 0644))
 		require.NoError(t, os.WriteFile(deletedLog, []byte("content"), 0644))
 
-		_ = GetOrCreateFileState(existingLog)
-		_ = GetOrCreateFileState(deletedLog)
+		existingState := GetOrCreateFileState(existingLog)
+		existingState.LineNumber = 10
+		deletedState := GetOrCreateFileState(deletedLog)
+		deletedState.LineNumber = 42
 		require.Equal(t, 2, len(globalState.Files))
 
 		// Now delete one of the files.
@@ -135,12 +164,19 @@ func TestFileStateOperations(t *testing.T) {
 
 		UpdateAllFileMetadata()
 
-		assert.Equal(t, 1, len(globalState.Files), "state for deleted file should be removed")
-		_, exists := globalState.Files[deletedLog]
-		assert.False(t, exists)
+		assert.Equal(t, 2, len(globalState.Files), "state for previously known file should be preserved")
+
+		preservedState := globalState.Files[deletedLog]
+		require.NotNil(t, preservedState)
+		assert.Equal(t, deletedLog, preservedState.Path)
+		assert.Equal(t, int64(42), preservedState.LineNumber)
+		assert.Equal(t, int64(0), preservedState.FileSize)
+		assert.Equal(t, int64(0), preservedState.LastModified)
+		assert.Equal(t, uint64(0), preservedState.Inode)
 
 		fs := globalState.Files[existingLog]
 		require.NotNil(t, fs)
+		assert.Equal(t, int64(10), fs.LineNumber)
 		assert.NotZero(t, fs.FileSize)
 		assert.NotZero(t, fs.LastModified)
 	})
@@ -250,6 +286,22 @@ func TestFindMatchingPosition(t *testing.T) {
 		require.NoError(t, Initialize(filepath.Join(tmpDir, "state.json")))
 		state := &FileState{LineNumber: 1, FileSize: 10, LastModified: 100}
 		line, found := FindMatchingPosition("non/existent/file.log", state)
+		assert.Equal(t, int64(0), line)
+		assert.False(t, found)
+	})
+
+	t.Run("Previously known file missing at startup returns beginning", func(t *testing.T) {
+		require.NoError(t, Initialize(filepath.Join(tmpDir, "state.json")))
+		missingPath := filepath.Join(tmpDir, "previously-known.log")
+		state := &FileState{
+			Path:         missingPath,
+			LineNumber:   99,
+			FileSize:     1234,
+			LastModified: time.Now().Unix(),
+			Inode:        999,
+		}
+
+		line, found := FindMatchingPosition(missingPath, state)
 		assert.Equal(t, int64(0), line)
 		assert.False(t, found)
 	})
