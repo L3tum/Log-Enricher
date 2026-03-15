@@ -21,7 +21,7 @@ func setupTestState(t *testing.T) (string, func()) {
 	cleanup := func() {
 		os.RemoveAll(tmpDir)
 		// Reset the global state after each test to ensure isolation.
-		globalState = nil
+		resetGlobalState()
 	}
 
 	return tmpDir, cleanup

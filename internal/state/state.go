@@ -42,7 +42,57 @@ type AppState struct {
 	mu     sync.RWMutex
 }
 
-var globalState *AppState
+func newAppState() *AppState {
+	return &AppState{
+		Files:  make(map[string]*FileState),
+		Caches: make(map[string]map[string]any),
+		Cache:  make(map[string]models.Result),
+	}
+}
+
+var globalState = newAppState()
+
+func resetGlobalState() {
+	globalState.mu.Lock()
+	defer globalState.mu.Unlock()
+
+	globalState.Files = make(map[string]*FileState)
+	globalState.Caches = make(map[string]map[string]any)
+	globalState.Cache = make(map[string]models.Result)
+}
+
+func snapshotState() *AppState {
+	snapshot := newAppState()
+
+	globalState.mu.RLock()
+	defer globalState.mu.RUnlock()
+
+	for path, fileState := range globalState.Files {
+		fileState.mu.RLock()
+		snapshot.Files[path] = &FileState{
+			Path:         fileState.Path,
+			LineNumber:   fileState.LineNumber,
+			Inode:        fileState.Inode,
+			FileSize:     fileState.FileSize,
+			LastModified: fileState.LastModified,
+		}
+		fileState.mu.RUnlock()
+	}
+
+	for cacheName, entries := range globalState.Caches {
+		entriesSnapshot := make(map[string]any, len(entries))
+		for key, value := range entries {
+			entriesSnapshot[key] = value
+		}
+		snapshot.Caches[cacheName] = entriesSnapshot
+	}
+
+	for ip, result := range globalState.Cache {
+		snapshot.Cache[ip] = result
+	}
+
+	return snapshot
+}
 
 // Initialize creates a new state and loads from disk if available
 func Initialize(stateFilePath string) error {
@@ -50,11 +100,7 @@ func Initialize(stateFilePath string) error {
 		return fmt.Errorf("state file path is empty")
 	}
 
-	globalState = &AppState{
-		Files:  make(map[string]*FileState),
-		Caches: make(map[string]map[string]any),
-		Cache:  make(map[string]models.Result),
-	}
+	resetGlobalState()
 
 	return Load(stateFilePath)
 }
@@ -70,14 +116,29 @@ func Load(path string) error {
 		return fmt.Errorf("failed to read state file: %w", err)
 	}
 
-	globalState.mu.Lock()
-	defer globalState.mu.Unlock()
-
-	if err := json.Unmarshal(data, &globalState); err != nil {
+	loadedState := &AppState{}
+	if err := json.Unmarshal(data, loadedState); err != nil {
 		return fmt.Errorf("failed to unmarshal state: %w", err)
 	}
+	if loadedState.Files == nil {
+		loadedState.Files = make(map[string]*FileState)
+	}
+	if loadedState.Caches == nil {
+		loadedState.Caches = make(map[string]map[string]any)
+	}
+	if loadedState.Cache == nil {
+		loadedState.Cache = make(map[string]models.Result)
+	}
 
-	slog.Info("Loaded state", "files", len(globalState.Files), "cacheEntries", len(globalState.Cache))
+	globalState.mu.Lock()
+	globalState.Files = loadedState.Files
+	globalState.Caches = loadedState.Caches
+	globalState.Cache = loadedState.Cache
+	filesCount := len(globalState.Files)
+	cacheEntries := len(globalState.Cache)
+	globalState.mu.Unlock()
+
+	slog.Info("Loaded state", "files", filesCount, "cacheEntries", cacheEntries)
 	return nil
 }
 
@@ -89,9 +150,10 @@ func Save(path string) error {
 
 	UpdateAllFileMetadata() // Update metadata just before saving
 
-	globalState.mu.RLock()
-	data, err := json.MarshalIndent(globalState, "", "  ")
-	globalState.mu.RUnlock()
+	snapshot := snapshotState()
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	filesCount := len(snapshot.Files)
+	cacheEntries := len(snapshot.Cache)
 
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
@@ -107,7 +169,7 @@ func Save(path string) error {
 		return fmt.Errorf("failed to write state file: %w", err)
 	}
 
-	slog.Info("Saved state", "files", len(globalState.Files), "cacheEntries", len(globalState.Cache))
+	slog.Info("Saved state", "files", filesCount, "cacheEntries", cacheEntries)
 	return nil
 }
 
@@ -220,15 +282,24 @@ func SetCacheEntries(name string, entries map[string]any) {
 }
 
 func GetCacheEntry(ip string) (models.Result, bool) {
+	globalState.mu.RLock()
+	defer globalState.mu.RUnlock()
+
 	result, ok := globalState.Cache[ip]
 	return result, ok
 }
 
 func SetCacheEntry(ip string, result models.Result) {
+	globalState.mu.Lock()
+	defer globalState.mu.Unlock()
+
 	globalState.Cache[ip] = result
 }
 
 func GetAllCacheKeys() []string {
+	globalState.mu.RLock()
+	defer globalState.mu.RUnlock()
+
 	keys := make([]string, 0, len(globalState.Cache))
 	for k := range globalState.Cache {
 		keys = append(keys, k)
@@ -237,9 +308,15 @@ func GetAllCacheKeys() []string {
 }
 
 func GetCacheSize() int {
+	globalState.mu.RLock()
+	defer globalState.mu.RUnlock()
+
 	return len(globalState.Cache)
 }
 
 func ClearCache() {
+	globalState.mu.Lock()
+	defer globalState.mu.Unlock()
+
 	globalState.Cache = make(map[string]models.Result)
 }
