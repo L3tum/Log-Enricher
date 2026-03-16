@@ -36,7 +36,7 @@ func (s *FieldRewriteStage) Process(entry *models.LogEntry) (keep bool, err erro
 	}
 
 	if !s.config.KeepOldFields {
-		for fieldName, _ := range entry.Fields {
+		for fieldName := range entry.Fields {
 			if _, ok := s.rewrites[fieldName]; !ok {
 				delete(entry.Fields, fieldName)
 			}
