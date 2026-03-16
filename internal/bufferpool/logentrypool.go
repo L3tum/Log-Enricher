@@ -93,32 +93,47 @@ func (op *logEntryPool) manageFieldCount() {
 		if lastAdjustment.Before(time.Now().Add(-10 * time.Minute)) {
 			lastAdjustment = time.Now()
 
-			maxCount := op.tinyFieldCount
+			maxCount := op.tinyFieldCount * 5
 			maxSize := uint32(5)
+			idealName := "tiny"
 
-			if op.verySmallFieldCount > maxCount {
-				maxCount = op.verySmallFieldCount
+			// Check by number of fields to get a feeling of true size
+			if op.verySmallFieldCount*10 > maxCount {
+				maxCount = op.verySmallFieldCount * 10
 				maxSize = 10
+				idealName = "verysmall"
 			}
-			if op.smallFieldCount > maxCount {
-				maxCount = op.smallFieldCount
+			if op.smallFieldCount*20 > maxCount {
+				maxCount = op.smallFieldCount * 20
 				maxSize = 20
+				idealName = "small"
 			}
-			if op.mediumFieldCount > maxCount {
-				maxCount = op.mediumFieldCount
+			if op.mediumFieldCount*40 > maxCount {
+				maxCount = op.mediumFieldCount * 40
 				maxSize = 40
+				idealName = "medium"
 			}
-			if op.largeFieldCount > maxCount {
-				maxCount = op.largeFieldCount
+			if op.largeFieldCount*60 > maxCount {
+				maxCount = op.largeFieldCount * 60
 				maxSize = 60
+				idealName = "large"
 			}
-			if op.hugeFieldCount > maxCount {
+			if op.hugeFieldCount*100 > maxCount {
 				// Just keep the current size of the logEntry field
 				maxSize = 100
+				idealName = "huge"
 			}
 			op.currentIdealFieldCount = maxSize
-			slog.Info("Current ideal field count", "fieldCount", op.currentIdealFieldCount)
+			slog.Info("Current ideal field count", "fieldCount", idealName)
 			slog.Info("Distribution", "tiny", op.tinyFieldCount, "verySmall", op.verySmallFieldCount, "small", op.smallFieldCount, "medium", op.mediumFieldCount, "large", op.largeFieldCount, "huge", op.hugeFieldCount)
+
+			// Reset sizes
+			op.tinyFieldCount = 0
+			op.verySmallFieldCount = 0
+			op.smallFieldCount = 0
+			op.mediumFieldCount = 0
+			op.largeFieldCount = 0
+			op.hugeFieldCount = 0
 		}
 	}
 }

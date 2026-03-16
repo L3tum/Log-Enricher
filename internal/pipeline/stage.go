@@ -117,6 +117,8 @@ func newStage(stageCfg config.StageConfig, ctx context.Context) (Stage, *regexp.
 		stage = NewJSONParser()
 	case "structured_parser":
 		stage, err = NewStructuredParser(stageCfg.Params)
+	case "field_rewrite":
+		stage, err = NewFieldRewriteStage(stageCfg.Params)
 	default:
 		return nil, nil, fmt.Errorf("unknown stage type: %s", stageCfg.Type)
 	}
