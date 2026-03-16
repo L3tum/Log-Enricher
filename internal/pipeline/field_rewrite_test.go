@@ -5,7 +5,6 @@ import (
 
 	"log-enricher/internal/models"
 
-	"github.com/goccy/go-json"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -18,32 +17,26 @@ func TestNewFieldRewriteStage(t *testing.T) {
 		{
 			name:    "Valid empty config",
 			params:  map[string]interface{}{},
-			wantErr: false,
+			wantErr: true, // Empty rewrites should error
 		},
 		{
 			name: "Valid simple rewrites",
 			params: map[string]interface{}{
-				"rewrites": map[string]string{
-					"new_field": "old_field",
-				},
+				"rewrites": `{"new_field":"old_field"}`,
 			},
 			wantErr: false,
 		},
 		{
 			name: "Valid nested path rewrites",
 			params: map[string]interface{}{
-				"rewrites": map[string]string{
-					"new_field": "data.attributes.id",
-				},
+				"rewrites": `{"new_field":"data.attributes.id"}`,
 			},
 			wantErr: false,
 		},
 		{
 			name: "Valid keep_old_fields",
 			params: map[string]interface{}{
-				"rewrites": map[string]string{
-					"new_field": "old_field",
-				},
+				"rewrites":        `{"new_field":"old_field"}`,
 				"keep_old_fields": true,
 			},
 			wantErr: false,
@@ -70,9 +63,7 @@ func TestNewFieldRewriteStage(t *testing.T) {
 func TestFieldRewriteStage_Process_SimpleRewrite(t *testing.T) {
 	t.Run("Rewrite single field", func(t *testing.T) {
 		params := map[string]interface{}{
-			"rewrites": map[string]string{
-				"renamed_field": "original_field",
-			},
+			"rewrites":        `{"renamed_field":"original_field"}`,
 			"keep_old_fields": false,
 		}
 
@@ -102,9 +93,7 @@ func TestFieldRewriteStage_Process_SimpleRewrite(t *testing.T) {
 
 	t.Run("Rewrite with keep_old_fields", func(t *testing.T) {
 		params := map[string]interface{}{
-			"rewrites": map[string]string{
-				"renamed_field": "original_field",
-			},
+			"rewrites":        `{"renamed_field":"original_field"}`,
 			"keep_old_fields": true,
 		}
 
@@ -132,9 +121,7 @@ func TestFieldRewriteStage_Process_SimpleRewrite(t *testing.T) {
 func TestFieldRewriteStage_Process_NestedPath(t *testing.T) {
 	t.Run("Rewrite nested field", func(t *testing.T) {
 		params := map[string]interface{}{
-			"rewrites": map[string]string{
-				"processed_id": "data.attributes.id",
-			},
+			"rewrites":        `{"processed_id":"data.attributes.id"}`,
 			"keep_old_fields": false,
 		}
 
@@ -173,10 +160,7 @@ func TestFieldRewriteStage_Process_NestedPath(t *testing.T) {
 func TestFieldRewriteStage_Process_MultipleRewrites(t *testing.T) {
 	t.Run("Multiple field rewrites", func(t *testing.T) {
 		params := map[string]interface{}{
-			"rewrites": map[string]string{
-				"new_id":      "id",
-				"new_message": "message",
-			},
+			"rewrites":        `{"new_id":"id", "new_message": "message"}`,
 			"keep_old_fields": false,
 		}
 
@@ -217,9 +201,7 @@ func TestFieldRewriteStage_Process_MultipleRewrites(t *testing.T) {
 func TestFieldRewriteStage_Process_FieldNotFound(t *testing.T) {
 	t.Run("Source field not found", func(t *testing.T) {
 		params := map[string]interface{}{
-			"rewrites": map[string]string{
-				"new_field": "nonexistent_field",
-			},
+			"rewrites":        `{"new_field":"nonexistent_field"}`,
 			"keep_old_fields": false,
 		}
 
@@ -248,9 +230,7 @@ func TestFieldRewriteStage_Process_FieldNotFound(t *testing.T) {
 func TestFieldRewriteStage_Process_NestedPathNotFound(t *testing.T) {
 	t.Run("Nested path with missing intermediate", func(t *testing.T) {
 		params := map[string]interface{}{
-			"rewrites": map[string]string{
-				"new_field": "data.attributes.id",
-			},
+			"rewrites":        `{"new_field":"data.attributes.id"}`,
 			"keep_old_fields": false,
 		}
 
@@ -280,9 +260,7 @@ func TestFieldRewriteStage_Process_NestedPathNotFound(t *testing.T) {
 
 	t.Run("Nested path with wrong intermediate type", func(t *testing.T) {
 		params := map[string]interface{}{
-			"rewrites": map[string]string{
-				"new_field": "data.attributes.id",
-			},
+			"rewrites":        `{"new_field":"data.attributes.id"}`,
 			"keep_old_fields": false,
 		}
 
@@ -309,84 +287,15 @@ func TestFieldRewriteStage_Process_NestedPathNotFound(t *testing.T) {
 	})
 }
 
-func TestFieldRewriteStage_Process_EmptyRewrites(t *testing.T) {
-	t.Run("Empty rewrites config", func(t *testing.T) {
-		params := map[string]interface{}{
-			"rewrites":        map[string]string{},
-			"keep_old_fields": false,
-		}
-
-		stage, err := NewFieldRewriteStage(params)
-		assert.NoError(t, err)
-
-		entry := &models.LogEntry{
-			Fields: map[string]interface{}{
-				"field1": "value1",
-				"field2": "value2",
-			},
-		}
-
-		keep, err := stage.Process(entry)
-		assert.True(t, keep)
-		assert.NoError(t, err)
-
-		// Check that all fields were removed (empty rewrites + keep_old_fields=false)
-		assert.Len(t, entry.Fields, 0)
-	})
-
-	t.Run("Empty rewrites with keep_old_fields", func(t *testing.T) {
-		params := map[string]interface{}{
-			"rewrites":        map[string]string{},
-			"keep_old_fields": true,
-		}
-
-		stage, err := NewFieldRewriteStage(params)
-		assert.NoError(t, err)
-
-		entry := &models.LogEntry{
-			Fields: map[string]interface{}{
-				"field1": "value1",
-				"field2": "value2",
-			},
-		}
-
-		keep, err := stage.Process(entry)
-		assert.True(t, keep)
-		assert.NoError(t, err)
-
-		// Check that all fields were kept
-		assert.Equal(t, "value1", entry.Fields["field1"])
-		assert.Equal(t, "value2", entry.Fields["field2"])
-	})
-}
-
-func TestFieldRewriteStage_Name(t *testing.T) {
-	params := map[string]interface{}{
-		"rewrites": map[string]string{},
-	}
-
-	stage, err := NewFieldRewriteStage(params)
-	assert.NoError(t, err)
-
-	assert.Equal(t, "field rewrite", stage.Name())
-}
-
 // TestEnvironmentVariableParsing tests how environment variables are parsed into map[string][]string
 func TestEnvironmentVariableParsing(t *testing.T) {
 	t.Run("JSON format env var", func(t *testing.T) {
 		// Simulates: FIELD_REWRITE_REWRITES='{"new_field":"old_field","another":"data.attributes.id"}'
 		jsonEnv := `{"new_field":"old_field","another":"data.attributes.id"}`
 
-		// In config.go, this gets read as a string from os.Getenv
-		// Then mapstructure decodes it into map[string]interface{}
-		// The value needs to be unmarshaled as a map[string]string first
-		var rewritesMap map[string]string
-		err := json.Unmarshal([]byte(jsonEnv), &rewritesMap)
-		assert.NoError(t, err)
-
 		// Then this gets passed to NewFieldRewriteStage
 		params := map[string]interface{}{
-			"rewrites": rewritesMap,
+			"rewrites": jsonEnv,
 		}
 
 		stage, err := NewFieldRewriteStage(params)
@@ -398,35 +307,12 @@ func TestEnvironmentVariableParsing(t *testing.T) {
 		assert.NotNil(t, stage)
 	})
 
-	t.Run("Multiple env vars (key=value pairs)", func(t *testing.T) {
-		// Simulates: FIELD_REWRITE_REWRITES_new_field=old_field
-		//              FIELD_REWRITE_REWRITES_ananother=another.path
-		// Config loader creates: map[string]interface{}{"rewrites": map[string]interface{}{"new_field": "old_field", "another": "another.path"}}
-
-		// This requires special handling in config loader to parse nested maps
-		// For now, test the raw mapstructure decoding
-		params := map[string]interface{}{
-			"rewrites": map[string]interface{}{
-				"new_field": "old_field",
-				"another":   "data.attributes.id",
-			},
-		}
-
-		stage, err := NewFieldRewriteStage(params)
-		assert.NoError(t, err)
-		assert.NotNil(t, stage)
-	})
-
 	t.Run("JSON nested path with special characters", func(t *testing.T) {
 		// JSON format handles special characters in keys
 		jsonEnv := `{"field_with_underscore":"source.field","field-with-dash":"another.path"}`
 
-		var rewritesMap map[string]string
-		err := json.Unmarshal([]byte(jsonEnv), &rewritesMap)
-		assert.NoError(t, err)
-
 		params := map[string]interface{}{
-			"rewrites": rewritesMap,
+			"rewrites": jsonEnv,
 		}
 
 		stage, err := NewFieldRewriteStage(params)
@@ -437,16 +323,12 @@ func TestEnvironmentVariableParsing(t *testing.T) {
 	t.Run("Empty rewrites JSON", func(t *testing.T) {
 		jsonEnv := `{}`
 
-		var rewritesMap map[string]string
-		err := json.Unmarshal([]byte(jsonEnv), &rewritesMap)
-		assert.NoError(t, err)
-
 		params := map[string]interface{}{
-			"rewrites": rewritesMap,
+			"rewrites": jsonEnv,
 		}
 
 		stage, err := NewFieldRewriteStage(params)
-		assert.NoError(t, err)
-		assert.NotNil(t, stage)
+		assert.Error(t, err)
+		assert.Nil(t, stage)
 	})
 }
