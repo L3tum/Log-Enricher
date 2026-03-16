@@ -168,6 +168,11 @@ Computes a field from a Go template over existing fields.
 - `template` (required)
 - `field` (required)
 
+### `field_rewrite`
+Rewrites fields based on a map
+- `rewrites` (required) For example defined as {"field_with_underscore":"source.field","field-with-dash":"another.path"}
+- `keep_old_fields` Reduces the amount of fields by removing old ones. This takes more processing time at ingestion, but may reduce storage/query costs in the Backend(Loki)
+
 ## Example Pipeline
 
 ```bash
@@ -194,6 +199,11 @@ STAGE_5_TYPE=filter
 STAGE_5_ACTION=drop
 STAGE_5_MATCH=any
 STAGE_5_REGEX=(?i)healthcheck
+
+STAGE_6_TYPE=field_rewrite
+STAGE_6_APPLIES_TO=.*/caddy/.+
+STAGE_6_REWRITES={"field_with_underscore":"source.field","field-with-dash":"another.path"}
+STAGE_6_KEEP_OLD_FIELDS=false
 ```
 
 ## Development Checks
