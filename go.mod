@@ -7,7 +7,7 @@ toolchain go1.24.2
 require (
 	github.com/cespare/xxhash v1.1.0
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/goccy/go-json v0.10.5
+	github.com/goccy/go-json v0.10.6
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang/snappy v0.0.4
 	github.com/grafana/dskit v0.0.0-20250930144810-d6a51ec2b8c9
